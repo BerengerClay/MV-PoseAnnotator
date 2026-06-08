@@ -29,7 +29,7 @@ ENV/
 env/
 
 # Deep Learning Models / Weights
-weights/
+weights/**
 *.pth
 *.pt
 *.engine

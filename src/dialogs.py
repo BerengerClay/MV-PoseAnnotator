@@ -1,5 +1,24 @@
-from PyQt6.QtWidgets import QDialog, QCheckBox, QDialogButtonBox, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QGroupBox
+import os
+
+from PyQt6.QtWidgets import (QDialog, QCheckBox, QDialogButtonBox, QVBoxLayout, 
+                             QHBoxLayout, QLabel, QSlider, QGroupBox, QLineEdit, 
+                             QPushButton, QFileDialog, QMessageBox, QListView, 
+                             QTreeView, QAbstractItemView)
 from PyQt6.QtCore import Qt
+
+def select_multiple_directories(parent=None, caption="Select Directories", directory=""):
+    """Opens a non-native file dialog allowing multiple directories to be selected."""
+    dialog = QFileDialog(parent, caption, directory)
+    dialog.setOption(QFileDialog.Option.DontUseNativeDialog, True)
+    dialog.setFileMode(QFileDialog.FileMode.Directory)
+    
+    # Enable multiple/extended selection in the internal view widget
+    for view in dialog.findChildren((QListView, QTreeView)):
+        view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+        return dialog.selectedFiles()
+    return []
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -185,3 +204,110 @@ class SettingsDialog(QDialog):
                     cam.apply_bbox_view()
             self.parent_win.show_current_frame(preserve_view=True)
         super().reject()
+
+
+class SelectCameraFoldersDialog(QDialog):
+    def __init__(self, camera_keys, initial_parent="", prefilled_dirs=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Select Camera Folders")
+        self.resize(650, 450)
+        self.camera_keys = camera_keys
+        self.camera_dirs = {}
+        self.initial_parent = initial_parent
+        
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(10)
+        
+        # Style sheet
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0f172a;
+                color: #f8fafc;
+            }
+            QLabel {
+                color: #f8fafc;
+                font-size: 12px;
+            }
+            QLineEdit {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #475569;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+            }
+            QPushButton {
+                background-color: #1e293b;
+                color: white;
+                border: 1px solid #334155;
+                padding: 4px 10px;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+        """)
+        
+        main_layout.addWidget(QLabel("<b>Individual Camera Folders:</b>"))
+        
+        # 8 Camera folders rows
+        self.cam_inputs = {}
+        for key in camera_keys:
+            row_layout = QHBoxLayout()
+            cam_lbl = QLabel(f"{key}:")
+            cam_lbl.setMinimumWidth(120)
+            
+            initial_val = prefilled_dirs.get(key, "") if prefilled_dirs else ""
+            cam_txt = QLineEdit(initial_val)
+            btn_cam_browse = QPushButton("Browse...")
+            
+            # Use default capture in lambda
+            btn_cam_browse.clicked.connect(lambda checked=False, k=key: self.browse_camera(k))
+            
+            row_layout.addWidget(cam_lbl)
+            row_layout.addWidget(cam_txt, stretch=1)
+            row_layout.addWidget(btn_cam_browse)
+            main_layout.addLayout(row_layout)
+            self.cam_inputs[key] = cam_txt
+            
+        main_layout.addStretch()
+        
+        # Dialog buttons
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.accepted.connect(self.validate_and_accept)
+        self.buttons.rejected.connect(self.reject)
+        main_layout.addWidget(self.buttons)
+        
+    def browse_camera(self, key):
+        initial = self.cam_inputs[key].text()
+        if not initial:
+            initial = self.initial_parent
+        dir_path = QFileDialog.getExistingDirectory(self, f"Select Folder for {key}", initial)
+        if dir_path:
+            self.cam_inputs[key].setText(dir_path)
+            
+    def validate_and_accept(self):
+        # Retrieve and validate directories
+        dirs = {}
+        for key, input_widget in self.cam_inputs.items():
+            path = input_widget.text().strip()
+            if not path:
+                QMessageBox.warning(self, "Missing Folder", f"Please select a directory for {key}.")
+                return
+            if not os.path.isdir(path):
+                QMessageBox.warning(self, "Invalid Folder", f"The directory for {key} does not exist:\n{path}")
+                return
+            # Check if directory is empty or has no images
+            files = os.listdir(path)
+            has_images = any(f.lower().endswith(('.png', '.jpg', '.jpeg')) for f in files)
+            if not has_images:
+                QMessageBox.warning(self, "No Images", f"The directory for {key} does not contain any images (.png, .jpg, .jpeg):\n{path}")
+                return
+            dirs[key] = path
+            
+        self.camera_dirs = dirs
+        self.accept()
+        
+    def get_camera_dirs(self):
+        return self.camera_dirs

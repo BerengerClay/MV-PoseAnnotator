@@ -85,7 +85,7 @@ class SequencePreprocessWorker(QThread):
                 
                 # Sweet spot for max_workers: 4 workers
                 # This balances OpenCV I/O, resizing and PyTorch inference without overloading GPU or CPU
-                max_workers = 8
+                max_workers = 4
                 
                 def process_image(idx, img_entry):
                     if self._is_cancelled:

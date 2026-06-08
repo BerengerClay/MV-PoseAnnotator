@@ -15,19 +15,20 @@ from PyQt6.QtCore import Qt, QTimer
 from src.constants import CAMERA_KEYS
 from src.widgets import CameraWidget
 from src.workers import WorkerThread, SequencePreprocessWorker
-from src.dialogs import SettingsDialog
+from src.dialogs import SettingsDialog, SelectCameraFoldersDialog, select_multiple_directories
 from src.visualizer3d import Visualizer3DWindow, Visualizer3DWidget
 from src.backend import ModelWrapper, triangulate_and_reproject
 from src.icons import get_lucide_icon
 
 class TrampolineAnnotator(QMainWindow):
-    def __init__(self, sequence_dir=None):
+    def __init__(self, paths=None):
         super().__init__()
         self.setWindowTitle("Multi-View Trampoline Jumper Annotator")
         self.setGeometry(100, 100, 1600, 950)
         
         # Application state
         self.sequence_dir = None
+        self.camera_dirs = {}
         self.json_path = None
         self.sorted_frames = []
         self.current_frame_idx = -1
@@ -61,8 +62,8 @@ class TrampolineAnnotator(QMainWindow):
         self.setup_shortcuts()
 
         # Load sequence if provided via argument, otherwise prompt directory selection on startup
-        if sequence_dir:
-            self.load_sequence(sequence_dir)
+        if paths:
+            self.load_sequence_from_cli_paths(paths)
         else:
             self.prompt_select_sequence()
 
@@ -449,87 +450,223 @@ class TrampolineAnnotator(QMainWindow):
         """)
 
     def prompt_select_sequence(self):
-        """Open file dialog for the user to select the sequence folder."""
-        initial_dir = "/usagers4/p123652/Documents/annotator"
+        """Open a single file dialog to select multiple camera directories."""
+        initial_dir = "/usagers4/p123652/Documents/annotator/Data"
+        if not os.path.exists(initial_dir):
+            initial_dir = "/usagers4/p123652/Documents/annotator"
         if not os.path.exists(initial_dir):
             initial_dir = os.path.expanduser("~")
             
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Sequence Directory", initial_dir)
-        if dir_path:
-            self.load_sequence(dir_path)
+        selected_paths = select_multiple_directories(self, "Select 8 Camera Folders", initial_dir)
+        if not selected_paths:
+            self.status_bar.showMessage("Sequence loading cancelled.")
+            return
 
-    def load_sequence(self, seq_dir):
-        """Scans image files and loads or initializes annotations inside GT/."""
+        # Attempt to map selected folders (could be 1 or more) to the 8 camera keys
+        matched = {}
+        unmatched = list(selected_paths)
+        
+        # Pass 1: exact or clean substring matches
+        for key in CAMERA_KEYS:
+            for path in list(unmatched):
+                basename = os.path.basename(path).lower()
+                key_clean = key.lower().replace("_", "").replace("-", "")
+                base_clean = basename.replace("_", "").replace("-", "")
+                if key.lower() in basename or key_clean in base_clean:
+                    matched[key] = path
+                    unmatched.remove(path)
+                    break
+                    
+        # Pass 2: map by camera number index
+        for key in CAMERA_KEYS:
+            if key in matched:
+                continue
+            match_cam_num = re.search(r"camera(\d+)", key.lower())
+            if match_cam_num:
+                num = match_cam_num.group(1)
+                for path in list(unmatched):
+                    basename = os.path.basename(path).lower()
+                    if f"cam{num}" in basename or f"camera{num}" in basename or f"camera_{num}" in basename or f"cam_{num}" in basename:
+                        matched[key] = path
+                        unmatched.remove(path)
+                        break
+                        
+        # If we matched all 8 cameras, we can load directly!
+        if len(matched) == len(CAMERA_KEYS):
+            all_valid = True
+            for path in matched.values():
+                try:
+                    files = os.listdir(path)
+                    if not any(f.lower().endswith(('.png', '.jpg', '.jpeg')) for f in files):
+                        all_valid = False
+                        break
+                except Exception:
+                    all_valid = False
+                    break
+            if all_valid:
+                self.camera_dirs = matched
+                first_dir = next(iter(self.camera_dirs.values()))
+                self.sequence_dir = os.path.dirname(first_dir)
+                self.load_sequence_from_dirs(self.camera_dirs)
+                return
+
+        # If some matched (but not all) or some are invalid, open the dialog pre-filled!
+        first_dir = selected_paths[0]
+        parent_est = os.path.dirname(first_dir)
+        dialog = SelectCameraFoldersDialog(CAMERA_KEYS, initial_parent=parent_est, prefilled_dirs=matched, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.camera_dirs = dialog.camera_dirs
+            first_dir = next(iter(self.camera_dirs.values()))
+            self.sequence_dir = os.path.dirname(first_dir)
+            self.load_sequence_from_dirs(self.camera_dirs)
+
+    def load_sequence_from_cli_paths(self, paths):
+        """Loads sequence directly from a list of folders (multiple camera folders) passed via CLI."""
+        if not paths:
+            self.prompt_select_sequence()
+            return
+            
+        matched = {}
+        unmatched = list(paths)
+        
+        # Pass 1: exact or clean substring matches
+        for key in CAMERA_KEYS:
+            for path in list(unmatched):
+                basename = os.path.basename(path).lower()
+                key_clean = key.lower().replace("_", "").replace("-", "")
+                base_clean = basename.replace("_", "").replace("-", "")
+                if key.lower() in basename or key_clean in base_clean:
+                    matched[key] = path
+                    unmatched.remove(path)
+                    break
+                    
+        # Pass 2: map by camera number index
+        for key in CAMERA_KEYS:
+            if key in matched:
+                continue
+            match_cam_num = re.search(r"camera(\d+)", key.lower())
+            if match_cam_num:
+                num = match_cam_num.group(1)
+                for path in list(unmatched):
+                    basename = os.path.basename(path).lower()
+                    if f"cam{num}" in basename or f"camera{num}" in basename or f"camera_{num}" in basename or f"cam_{num}" in basename:
+                        matched[key] = path
+                        unmatched.remove(path)
+                        break
+                        
+        # If we successfully matched all 8 cameras, we load directly!
+        if len(matched) == len(CAMERA_KEYS):
+            all_valid = True
+            for path in matched.values():
+                try:
+                    files = os.listdir(path)
+                    if not any(f.lower().endswith(('.png', '.jpg', '.jpeg')) for f in files):
+                        all_valid = False
+                        break
+                except Exception:
+                    all_valid = False
+                    break
+            if all_valid:
+                self.camera_dirs = matched
+                first_dir = next(iter(self.camera_dirs.values()))
+                self.sequence_dir = os.path.dirname(first_dir)
+                self.load_sequence_from_dirs(self.camera_dirs)
+                return
+                
+        # If not all were matched or valid, show warning and return without loading
+        QMessageBox.warning(self, "Invalid Command Line Arguments",
+                            "Please specify all 8 camera folders when launching via command line.\n\n"
+                            "Example:\npython main.py Data/1_partie_0429_003*")
+        self.status_bar.showMessage("Failed to load sequence: invalid command line arguments.")
+
+    def extract_frame_idx(self, filename):
+        """Extracts frame index from filename robustly."""
+        match = re.search(r"frame_(\d+)", filename)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"(\d+)", filename)
+        if match:
+            return int(match.group(1))
+        return None
+
+    def extract_video_id(self, paths):
+        """Extracts the video identifier (e.g. '003' or '006') from path names."""
+        for path in paths:
+            basename = os.path.basename(path)
+            match = re.search(r"_(\d+)-Camera", basename)
+            if match:
+                return match.group(1)
+            match = re.search(r"_(\d+)-", basename)
+            if match:
+                return match.group(1)
+            match = re.search(r"_(\d{3,})", basename)
+            if match:
+                return match.group(1)
+        return "000"
+
+
+
+
+
+    def load_sequence_from_dirs(self, camera_dirs):
+        """Scans separate camera directories and loads or initializes annotation_{video_id}.json in parent's GT/ directory."""
         self.undo_stack.clear()
         self.redo_stack.clear()
         self.update_history_actions_state()
-        self.sequence_dir = seq_dir
-        self.path_lbl.setText(seq_dir)
         
-        # Try Data folder, fallback to the sequence directory itself
-        data_dir = os.path.join(seq_dir, "Data")
-        if not os.path.exists(data_dir) or not any(f.lower().endswith(('.png', '.jpg', '.jpeg')) for f in os.listdir(data_dir)):
-            data_dir = seq_dir
+        if not self.sequence_dir:
+            first_dir = next(iter(camera_dirs.values()))
+            self.sequence_dir = os.path.dirname(first_dir)
             
-        gt_dir = os.path.join(seq_dir, "GT")
+        self.path_lbl.setText(self.sequence_dir)
+        
+        gt_dir = os.path.join(self.sequence_dir, "GT")
         os.makedirs(gt_dir, exist_ok=True)
         
-        # Find any json file in GT directory, default to annotations.json
-        json_files = [f for f in os.listdir(gt_dir) if f.lower().endswith(".json")]
-        if json_files:
-            json_path = os.path.join(gt_dir, json_files[0])
-        else:
-            json_path = os.path.join(gt_dir, "annotations.json")
-            
-        self.json_path = json_path
+        video_id = self.extract_video_id(camera_dirs.values())
+        self.json_path = os.path.join(gt_dir, f"annotation_{video_id}.json")
         
-        # 1. Scan the directory for camera frames
-        self.status_bar.showMessage(f"Scanning directory: {os.path.basename(data_dir)}...")
-        files = os.listdir(data_dir)
+        self.status_bar.showMessage("Scanning camera directories...")
         self.frame_data.clear()
         
-        for f in files:
-            if not (f.lower().endswith(".png") or f.lower().endswith(".jpg") or f.lower().endswith(".jpeg")):
+        for cam_key, cam_dir in camera_dirs.items():
+            if not os.path.isdir(cam_dir):
                 continue
-                
-            # Frame index extraction: looks for frame_XXXXX in name
-            match_frame = re.search(r"frame_(\d+)", f)
-            if not match_frame:
+            try:
+                files = os.listdir(cam_dir)
+            except Exception as e:
+                print(f"Error listing {cam_dir}: {e}")
                 continue
-            frame_idx = int(match_frame.group(1))
-            
-            # Camera key matching
-            cam_key = None
-            for key in CAMERA_KEYS:
-                if key in f:
-                    cam_key = key
-                    break
+            for f in files:
+                if not (f.lower().endswith(".png") or f.lower().endswith(".jpg") or f.lower().endswith(".jpeg")):
+                    continue
                     
-            if cam_key is None:
-                continue
+                frame_idx = self.extract_frame_idx(f)
+                if frame_idx is None:
+                    continue
+                    
+                if frame_idx not in self.frame_data:
+                    self.frame_data[frame_idx] = {}
+                self.frame_data[frame_idx][cam_key] = os.path.join(cam_dir, f)
                 
-            if frame_idx not in self.frame_data:
-                self.frame_data[frame_idx] = {}
-            self.frame_data[frame_idx][cam_key] = os.path.join(data_dir, f)
-            
+        # Only keep frames that are present for all cameras to prevent KeyError later
+        self.frame_data = {idx: cams for idx, cams in self.frame_data.items() if len(cams) == len(CAMERA_KEYS)}
         self.sorted_frames = sorted(list(self.frame_data.keys()))
         
         if not self.sorted_frames:
-            QMessageBox.warning(self, "No frames found", "No valid camera frames found inside the 'Data' directory.")
+            QMessageBox.warning(self, "No frames found", "No valid camera frames found inside the camera directories.")
             return
 
-        # 2. Load or initialize annotations.json
         self.coco_data = {"images": [], "annotations": [], "categories": [{"id": 1, "name": "person"}]}
         self.img_ann_map.clear()
         self.img_file_map.clear()
         
-        if os.path.exists(json_path):
-            self.status_bar.showMessage("Loading existing annotations.json...")
+        if os.path.exists(self.json_path):
+            self.status_bar.showMessage(f"Loading existing {os.path.basename(self.json_path)}...")
             try:
-                with open(json_path, "r") as f:
+                with open(self.json_path, "r") as f:
                     self.coco_data = json.load(f)
                     
-                # Re-index existing images and annotations by basename to support moving directories
                 existing_ann = {}
                 existing_img = {}
                 for img in self.coco_data.get("images", []):
@@ -537,13 +674,11 @@ class TrampolineAnnotator(QMainWindow):
                 for ann in self.coco_data.get("annotations", []):
                     existing_ann[ann["image_id"]] = ann
                     
-                # Build fresh maps matching our local files
                 new_images = []
                 new_annotations = []
                 next_img_id = 1
                 next_ann_id = 1
                 
-                # Check for highest IDs to avoid overlap
                 if self.coco_data.get("images"):
                     next_img_id = max(img["id"] for img in self.coco_data["images"]) + 1
                 if self.coco_data.get("annotations"):
@@ -555,14 +690,11 @@ class TrampolineAnnotator(QMainWindow):
                             local_path = self.frame_data[frame_idx][cam_key]
                             base_name = os.path.basename(local_path)
                             
-                            # Match with existing file entry
                             if base_name in existing_img:
                                 img_entry = existing_img[base_name]
-                                # Keep existing ID, update path to local file path
                                 img_entry["file_name"] = local_path
                                 ann_entry = existing_ann.get(img_entry["id"])
                                 if ann_entry is None:
-                                    # Create default annotation
                                     ann_entry = {
                                         "id": next_ann_id,
                                         "image_id": img_entry["id"],
@@ -574,7 +706,6 @@ class TrampolineAnnotator(QMainWindow):
                                     }
                                     next_ann_id += 1
                             else:
-                                # Create new image entry
                                 img_entry = {
                                     "id": next_img_id,
                                     "file_name": local_path,
@@ -602,7 +733,7 @@ class TrampolineAnnotator(QMainWindow):
                 self.coco_data["annotations"] = new_annotations
                 self.status_bar.showMessage("Annotations successfully mapped.", 3000)
             except Exception as e:
-                QMessageBox.critical(self, "Load Error", f"Failed to parse annotations.json: {e}. Starting fresh.")
+                QMessageBox.critical(self, "Load Error", f"Failed to parse {os.path.basename(self.json_path)}: {e}. Starting fresh.")
                 self.initialize_fresh_coco()
         else:
             self.initialize_fresh_coco()
@@ -622,7 +753,6 @@ class TrampolineAnnotator(QMainWindow):
         
         self.btn_preprocess_seq.setEnabled(True)
         
-        # Check if preprocessing is recommended
         unannotated_count = 0
         for img in self.coco_data.get("images", []):
             ann = self.img_ann_map.get(img["id"])
@@ -642,7 +772,8 @@ class TrampolineAnnotator(QMainWindow):
 
     def initialize_fresh_coco(self):
         """Initializes empty COCO dict structure mapping scanned local image files."""
-        self.status_bar.showMessage("Initializing new annotations.json...")
+        json_name = os.path.basename(self.json_path) if self.json_path else "annotations.json"
+        self.status_bar.showMessage(f"Initializing new {json_name}...")
         self.coco_data = {"images": [], "annotations": [], "categories": [{"id": 1, "name": "person"}]}
         self.img_ann_map.clear()
         self.img_file_map.clear()
@@ -672,7 +803,7 @@ class TrampolineAnnotator(QMainWindow):
                     self.img_ann_map[img_id] = ann_entry
                     self.img_file_map[file_path] = img_entry
                     img_id += 1
-        self.status_bar.showMessage("New annotations.json initialized.", 3000)
+        self.status_bar.showMessage(f"New {json_name} initialized.", 3000)
 
     def show_current_frame(self, preserve_view=False):
         """Updates QGraphicsScene components on the 8 grid views."""
