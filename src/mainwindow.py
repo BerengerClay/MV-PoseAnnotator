@@ -412,6 +412,40 @@ class TrampolineAnnotator(QMainWindow):
                 color: #f8fafc;
                 font-family: 'Segoe UI', Arial, sans-serif;
             }
+            QDialog, QMessageBox, QFileDialog {
+                background-color: #0f172a;
+            }
+            QDialog QLabel, QMessageBox QLabel, QFileDialog QLabel {
+                color: #f8fafc;
+            }
+            QDialog QLineEdit, QFileDialog QLineEdit {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QDialog QListView, QDialog QTreeView, QFileDialog QListView, QFileDialog QTreeView {
+                background-color: #090d16;
+                color: #f8fafc;
+                border: 1px solid #334155;
+            }
+            QDialog QHeaderView::section, QFileDialog QHeaderView::section {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+            }
+            QDialog QComboBox, QFileDialog QComboBox {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QDialog QComboBox QAbstractItemView, QFileDialog QComboBox QAbstractItemView {
+                background-color: #1e293b;
+                color: #f8fafc;
+            }
             QPushButton {
                 background-color: #1e293b;
                 border: 1px solid #334155;
@@ -419,6 +453,7 @@ class TrampolineAnnotator(QMainWindow):
                 border-radius: 6px;
                 font-weight: 500;
                 font-size: 13px;
+                color: #f8fafc;
             }
             QPushButton:hover {
                 background-color: #334155;
@@ -667,10 +702,16 @@ class TrampolineAnnotator(QMainWindow):
                 with open(self.json_path, "r") as f:
                     self.coco_data = json.load(f)
                     
+                def get_path_key(path):
+                    parts = os.path.normpath(path).split(os.sep)
+                    if len(parts) >= 2:
+                        return f"{parts[-2]}/{parts[-1]}"
+                    return os.path.basename(path)
+
                 existing_ann = {}
                 existing_img = {}
                 for img in self.coco_data.get("images", []):
-                    existing_img[os.path.basename(img["file_name"])] = img
+                    existing_img[get_path_key(img["file_name"])] = img
                 for ann in self.coco_data.get("annotations", []):
                     existing_ann[ann["image_id"]] = ann
                     
@@ -688,10 +729,10 @@ class TrampolineAnnotator(QMainWindow):
                     for cam_key in CAMERA_KEYS:
                         if cam_key in self.frame_data[frame_idx]:
                             local_path = self.frame_data[frame_idx][cam_key]
-                            base_name = os.path.basename(local_path)
+                            path_key = get_path_key(local_path)
                             
-                            if base_name in existing_img:
-                                img_entry = existing_img[base_name]
+                            if path_key in existing_img:
+                                img_entry = existing_img[path_key]
                                 img_entry["file_name"] = local_path
                                 ann_entry = existing_ann.get(img_entry["id"])
                                 if ann_entry is None:

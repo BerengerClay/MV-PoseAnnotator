@@ -125,13 +125,57 @@ class ViTPose(nn.Module):
 
 def load_vitpose_model(weight_path, device="cpu"):
     """Loads the ViTPose-s model with pretrained weights"""
-    model = ViTPose(img_size=(256, 192), patch_size=16, in_chans=3, embed_dim=384, depth=12, num_heads=12, out_channels=17)
-    checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
-    state_dict = checkpoint.get("state_dict", checkpoint)
-    
-    # Strip prefixes if checkpoint is saved inside mmpose config structure
-    # Standard format has 'backbone.pos_embed' etc. which matches our class structure.
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
-    return model
+    import sys
+    from types import ModuleType
+    from importlib.machinery import ModuleSpec
+
+    class MockMetaclass(type):
+        def __getattr__(cls, name):
+            return MockConfig
+
+    class MockConfig(dict, metaclass=MockMetaclass):
+        def __getattr__(self, name):
+            if name in self:
+                return self[name]
+            return self
+        def __setattr__(self, name, value):
+            self[name] = value
+        def __call__(self, *args, **kwargs):
+            return self
+
+    class MockModule(ModuleType):
+        def __getattr__(self, name):
+            return MockConfig
+        def __setattr__(self, name, value):
+            pass
+
+    class MockFinder:
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "mmengine" or fullname.startswith("mmengine."):
+                return ModuleSpec(fullname, MockLoader(fullname))
+            return None
+
+    class MockLoader:
+        def __init__(self, fullname):
+            self.fullname = fullname
+        def create_module(self, spec):
+            return MockModule(self.fullname)
+        def exec_module(self, module):
+            pass
+
+    finder = MockFinder()
+    sys.meta_path.insert(0, finder)
+    try:
+        model = ViTPose(img_size=(256, 192), patch_size=16, in_chans=3, embed_dim=384, depth=12, num_heads=12, out_channels=17)
+        checkpoint = torch.load(weight_path, map_location=device, weights_only=False)
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        
+        # Strip prefixes if checkpoint is saved inside mmpose config structure
+        # Standard format has 'backbone.pos_embed' etc. which matches our class structure.
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+        return model
+    finally:
+        if finder in sys.meta_path:
+            sys.meta_path.remove(finder)
