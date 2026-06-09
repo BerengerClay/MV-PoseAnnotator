@@ -1178,7 +1178,8 @@ class TrampolineAnnotator(QMainWindow):
             self.push_undo()
 
         # Create progress dialog
-        self.progress_dialog = QProgressDialog("Initializing models...", "Cancel", 0, total_images, self)
+        total_frames = len(self.sorted_frames)
+        self.progress_dialog = QProgressDialog("Initializing models...", "Cancel", 0, total_frames, self)
         self.progress_dialog.setWindowTitle("Pre-processing Sequence")
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.progress_dialog.setMinimumDuration(0)
@@ -1187,7 +1188,9 @@ class TrampolineAnnotator(QMainWindow):
         # Instantiate and start the worker thread
         self.preprocess_worker = SequencePreprocessWorker(
             model_wrapper=self.model_wrapper,
-            images=self.coco_data["images"],
+            sorted_frames=self.sorted_frames,
+            frame_data=self.frame_data,
+            img_file_map=self.img_file_map,
             img_ann_map=self.img_ann_map
         )
         self.active_worker = self.preprocess_worker

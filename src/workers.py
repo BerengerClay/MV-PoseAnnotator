@@ -1,5 +1,6 @@
 import os
 from PyQt6.QtCore import QThread, pyqtSignal
+from src.constants import CAMERA_KEYS
 
 class WorkerThread(QThread):
     """Background computation thread to run YOLO and ViTPose without freezing UI."""
@@ -43,16 +44,18 @@ class WorkerThread(QThread):
 
 
 class SequencePreprocessWorker(QThread):
-    """Background computation thread to run YOLO and ViTPose on all images in the sequence."""
+    """Background computation thread to run YOLO and ViTPose on all images in the sequence using batching."""
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(int)
     error = pyqtSignal(str)
 
-    def __init__(self, model_wrapper, images, img_ann_map):
+    def __init__(self, model_wrapper, sorted_frames, frame_data, img_file_map, img_ann_map):
         super().__init__()
         self.model_wrapper = model_wrapper
-        self.images = images  # list of image dicts
-        self.img_ann_map = img_ann_map  # map of image_id -> annotation dict
+        self.sorted_frames = sorted_frames
+        self.frame_data = frame_data
+        self.img_file_map = img_file_map
+        self.img_ann_map = img_ann_map
         self._is_cancelled = False
 
     def cancel(self):
@@ -60,88 +63,62 @@ class SequencePreprocessWorker(QThread):
 
     def run(self):
         try:
-            # First initialize the models in this thread to make sure they are loaded
+            # First initialize the models to make sure they are loaded
             self.model_wrapper.init_yolo()
             self.model_wrapper.init_vitpose()
             
-            total = len(self.images)
+            total_frames = len(self.sorted_frames)
+            processed_images_count = 0
             
-            # Filter out images that are already processed
-            images_to_process = []
-            skipped_count = 0
-            
-            for idx, img_entry in enumerate(self.images):
-                img_id = img_entry["id"]
-                ann = self.img_ann_map[img_id]
-                if ann.get("bbox") and sum(ann["bbox"]) > 0:
-                    skipped_count += 1
-                    self.progress.emit(idx + 1, total, f"Saut de {os.path.basename(img_entry['file_name'])} (déjà traité)")
-                else:
-                    images_to_process.append((idx, img_entry))
-            
-            processed_count = 0
-            if images_to_process:
-                from concurrent.futures import ThreadPoolExecutor, as_completed
+            for f_idx, frame_idx in enumerate(self.sorted_frames):
+                if self._is_cancelled:
+                    break
                 
-                # Sweet spot for max_workers: 4 workers
-                # This balances OpenCV I/O, resizing and PyTorch inference without overloading GPU or CPU
-                max_workers = 4
+                # Group views of this frame that need to be processed
+                images_to_process = []  # list of (cam_key, path, img_id, ann)
                 
-                def process_image(idx, img_entry):
-                    if self._is_cancelled:
-                        return idx, img_entry, None, None
-                    try:
-                        image_path = img_entry["file_name"]
-                        bbox = self.model_wrapper.run_yolo(image_path)
-                        keypoints = None
-                        if bbox and not self._is_cancelled:
-                            keypoints = self.model_wrapper.run_vitpose(image_path, bbox)
-                        return idx, img_entry, bbox, keypoints
-                    except Exception as e:
-                        return idx, img_entry, e, None
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {
-                        executor.submit(process_image, idx, img_entry): (idx, img_entry)
-                        for idx, img_entry in images_to_process
-                    }
+                for cam_key in CAMERA_KEYS:
+                    path = self.frame_data[frame_idx].get(cam_key)
+                    if path:
+                        img_entry = self.img_file_map.get(path)
+                        if img_entry:
+                            img_id = img_entry["id"]
+                            ann = self.img_ann_map.get(img_id)
+                            # Only process if bbox is not drawn yet
+                            if ann and (not ann.get("bbox") or sum(ann["bbox"]) == 0):
+                                images_to_process.append((cam_key, path, img_id, ann))
+                
+                if not images_to_process:
+                    # All cameras for this frame are already processed
+                    self.progress.emit(f_idx + 1, total_frames, f"Frame {f_idx + 1}/{total_frames} déjà traitée")
+                    continue
+                
+                # Extract image paths for batch processing
+                paths = [item[1] for item in images_to_process]
+                
+                # 1. Run YOLO batch on the images
+                bboxes = self.model_wrapper.run_yolo_batch(paths)
+                
+                # 2. Run ViTPose batch on the images
+                keypoints_list = self.model_wrapper.run_vitpose_batch(paths, bboxes)
+                
+                # 3. Save predictions back to memory database
+                for idx, (cam_key, path, img_id, ann) in enumerate(images_to_process):
+                    bbox = bboxes[idx]
+                    keypoints = keypoints_list[idx]
                     
-                    completed_tasks_count = skipped_count
-                    for future in as_completed(futures):
-                        if self._is_cancelled:
-                            # Cancel pending futures
-                            for f in futures:
-                                f.cancel()
-                            break
-                            
-                        try:
-                            idx, img_entry, bbox, keypoints = future.result()
-                            
-                            # If an exception was raised during task execution, propagate it
-                            if isinstance(bbox, Exception):
-                                raise bbox
-                                
-                            if bbox:
-                                img_id = img_entry["id"]
-                                ann = self.img_ann_map[img_id]
-                                ann["bbox"] = bbox
-                                if keypoints:
-                                    flat_kps = []
-                                    for kp in keypoints:
-                                        flat_kps.extend(kp)
-                                    ann["keypoints"] = flat_kps
-                                    ann["num_keypoints"] = sum(1 for idx_kp in range(17) if flat_kps[idx_kp*3 + 2] > 0)
-                                processed_count += 1
-                                
-                            completed_tasks_count += 1
-                            self.progress.emit(completed_tasks_count, total, f"Traitement de {os.path.basename(img_entry['file_name'])}...")
-                            
-                        except Exception as e:
-                            # Cancel remaining tasks and raise
-                            for f in futures:
-                                f.cancel()
-                            raise e
+                    if bbox:
+                        ann["bbox"] = bbox
+                        if keypoints:
+                            flat_kps = []
+                            for kp in keypoints:
+                                flat_kps.extend(kp)
+                            ann["keypoints"] = flat_kps
+                            ann["num_keypoints"] = sum(1 for idx_kp in range(17) if flat_kps[idx_kp*3 + 2] > 0)
+                        processed_images_count += 1
+                
+                self.progress.emit(f_idx + 1, total_frames, f"Traitement de la frame {f_idx + 1}/{total_frames}...")
             
-            self.finished.emit(processed_count)
+            self.finished.emit(processed_images_count)
         except Exception as e:
             self.error.emit(str(e))

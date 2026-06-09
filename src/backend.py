@@ -19,74 +19,49 @@ class ModelWrapper:
         else:
             self.weights_dir = weights_dir
             
-        self._local = threading.local()
         self.yolo_model = None
         self.vitpose_model = None
-
-    @property
-    def yolo_model(self):
-        if not hasattr(self._local, "yolo_model"):
-            self._local.yolo_model = None
-        return self._local.yolo_model
-
-    @yolo_model.setter
-    def yolo_model(self, val):
-        self._local.yolo_model = val
+        self.lock = threading.Lock()
 
     def init_yolo(self):
-        """Initializes the YOLO object detector, falling back to a PyTorch model if engine fails or CUDA is unavailable."""
+        """Initializes the YOLO object detector using the PyTorch model."""
         if self.yolo_model is not None:
             return
-            
-        engine_path = os.path.join(self.weights_dir, "YOLO26s_best.engine")
-        
-        # TensorRT engine files can ONLY run on CUDA. If CUDA is not available, we must fall back to PyTorch .pt
-        cuda_available = False
-        try:
-            cuda_available = torch.cuda.is_available()
-        except Exception:
-            pass
-            
-        if os.path.exists(engine_path) and cuda_available:
-            try:
-                # Also verify if tensorrt package is installed
-                import tensorrt
-                print(f"Loading YOLO TensorRT engine from {engine_path}...")
-                self.yolo_model = YOLO(engine_path)
-                print("YOLO TensorRT engine loaded successfully.")
+        with self.lock:
+            if self.yolo_model is not None:
                 return
-            except Exception as e:
-                print(f"TensorRT engine load/verification failed: {e}. Falling back to standard PyTorch model.")
-                
-        # Fallback to PyTorch model
-        pt_path = os.path.join(self.weights_dir, "YOLO26s_best.pt")
-        if not os.path.exists(pt_path):
-            pt_path = os.path.join(self.weights_dir, "yolov8s.pt")
             
-        print(f"Loading YOLO PyTorch model from {pt_path}...")
-        try:
-            self.yolo_model = YOLO(pt_path if os.path.exists(pt_path) else "yolov8s.pt")
-            print(f"YOLO PyTorch model ({os.path.basename(pt_path)}) loaded successfully.")
-        except Exception as ex:
-            print(f"Could not load fallback YOLO: {ex}")
-            raise ex
+            pt_path = os.path.join(self.weights_dir, "YOLO26s_best.pt")
+            if not os.path.exists(pt_path):
+                pt_path = os.path.join(self.weights_dir, "yolov8s.pt")
+                
+            print(f"Loading YOLO PyTorch model from {pt_path}...")
+            try:
+                self.yolo_model = YOLO(pt_path if os.path.exists(pt_path) else "yolov8s.pt")
+                print(f"YOLO PyTorch model ({os.path.basename(pt_path)}) loaded successfully.")
+            except Exception as ex:
+                print(f"Could not load YOLO model: {ex}")
+                raise ex
 
     def init_vitpose(self):
         """Initializes ViTPose-s pose estimator."""
         if self.vitpose_model is not None:
             return
+        with self.lock:
+            if self.vitpose_model is not None:
+                return
             
-        pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
-        if not os.path.exists(pth_path):
-            raise FileNotFoundError(f"ViTPose weights not found at: {pth_path}")
-            
-        try:
-            print(f"Loading ViTPose PyTorch model from {pth_path}...")
-            self.vitpose_model = load_vitpose_model(pth_path, device=self.device)
-            print("ViTPose model loaded successfully.")
-        except Exception as e:
-            print(f"Failed to load ViTPose: {e}")
-            raise e
+            pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
+            if not os.path.exists(pth_path):
+                raise FileNotFoundError(f"ViTPose weights not found at: {pth_path}")
+                
+            try:
+                print(f"Loading ViTPose PyTorch model from {pth_path}...")
+                self.vitpose_model = load_vitpose_model(pth_path, device=self.device)
+                print("ViTPose model loaded successfully.")
+            except Exception as e:
+                print(f"Failed to load ViTPose: {e}")
+                raise e
 
     def run_yolo(self, image_path):
         """Detects the jumper bounding box [x, y, w, h]."""
@@ -94,7 +69,8 @@ class ModelWrapper:
         
         # Run YOLO detector
         # conf=0.25, classes=[0] to focus on person (trampoline jumper)
-        results = self.yolo_model(image_path, verbose=False, conf=0.25)
+        with self.lock:
+            results = self.yolo_model(image_path, verbose=False, conf=0.25)
         
         if len(results) > 0 and len(results[0].boxes) > 0:
             boxes = results[0].boxes
@@ -141,8 +117,9 @@ class ModelWrapper:
         tensor = tensor.unsqueeze(0).to(self.device)
         
         # Model forward pass
-        with torch.no_grad():
-            heatmaps = self.vitpose_model(tensor)
+        with self.lock:
+            with torch.no_grad():
+                heatmaps = self.vitpose_model(tensor)
             
         # heatmaps: (1, 17, 64, 48) [B, joints, H_hm, W_hm]
         heatmaps = heatmaps.squeeze(0).cpu().numpy()
@@ -169,6 +146,97 @@ class ModelWrapper:
             keypoints.append([x_orig, y_orig, 2])
             
         return keypoints
+
+    def run_yolo_batch(self, image_paths):
+        """Detects bounding boxes for a batch of image paths using YOLO."""
+        self.init_yolo()
+        
+        with self.lock:
+            results = self.yolo_model(image_paths, verbose=False, conf=0.25)
+            
+        bboxes = []
+        for res in results:
+            bbox = None
+            if len(res.boxes) > 0:
+                boxes = res.boxes
+                best_idx = int(boxes.conf.argmax())
+                xyxy = boxes.xyxy[best_idx].cpu().numpy()
+                x1, y1, x2, y2 = xyxy
+                bbox = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+            bboxes.append(bbox)
+        return bboxes
+
+    def run_vitpose_batch(self, image_paths, bboxes):
+        """Runs ViTPose in batch mode on multiple cropped bounding boxes."""
+        self.init_vitpose()
+        
+        tensors = []
+        valid_indices = []
+        crop_infos = [] # list of (crop_w, crop_h, x1, y1) to map keypoints back
+        
+        for idx, (path, bbox) in enumerate(zip(image_paths, bboxes)):
+            if not bbox or sum(bbox) == 0:
+                continue
+                
+            img = cv2.imread(path)
+            if img is None:
+                continue
+                
+            h_orig, w_orig = img.shape[:2]
+            x, y, w, h = bbox
+            x1, y1 = max(0, int(x)), max(0, int(y))
+            x2, y2 = min(w_orig, int(x + w)), min(h_orig, int(y + h))
+            
+            if x2 <= x1 or y2 <= y1:
+                continue
+                
+            crop = img[y1:y2, x1:x2]
+            crop_h, crop_w = crop.shape[:2]
+            crop_resized = cv2.resize(crop, (192, 256))
+            crop_rgb = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)
+            
+            tensor = torch.from_numpy(crop_rgb).float().permute(2, 0, 1) / 255.0
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            tensor = (tensor - mean) / std
+            
+            tensors.append(tensor)
+            valid_indices.append(idx)
+            crop_infos.append((crop_w, crop_h, x1, y1))
+            
+        results = [None] * len(image_paths)
+        if not tensors:
+            return results
+            
+        # Stack into batch tensor
+        tensor_batch = torch.stack(tensors).to(self.device)
+        
+        with self.lock:
+            with torch.no_grad():
+                heatmaps_batch = self.vitpose_model(tensor_batch)
+                
+        heatmaps_batch = heatmaps_batch.cpu().numpy() # Shape: (N, 17, 64, 48)
+        
+        for i, idx in enumerate(valid_indices):
+            heatmaps = heatmaps_batch[i]
+            crop_w, crop_h, x1, y1 = crop_infos[i]
+            
+            keypoints = []
+            for j in range(17):
+                hm = heatmaps[j]
+                val_idx = hm.argmax()
+                y_hm, x_hm = np.unravel_index(val_idx, hm.shape)
+                
+                x_crop = (x_hm + 0.5) * 4.0
+                y_crop = (y_hm + 0.5) * 4.0
+                
+                x_orig = x1 + (x_crop / 192.0) * crop_w
+                y_orig = y1 + (y_crop / 256.0) * crop_h
+                
+                keypoints.append([x_orig, y_orig, 2])
+            results[idx] = keypoints
+            
+        return results
 
 
 def triangulate_and_reproject(keypoints_data, camera_matrices):
