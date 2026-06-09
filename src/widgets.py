@@ -117,6 +117,27 @@ class CameraWidget(QGraphicsView):
         self.swap_lr_btn.setToolTip("Swap Left and Right keypoints for this view")
         self.swap_lr_btn.hide()
 
+        # Copy previous frame annotations button
+        self.copy_prev_btn = QPushButton(self)
+        self.copy_prev_btn.setIcon(get_lucide_icon("history", color="#f8fafc"))
+        self.copy_prev_btn.setIconSize(QSize(12, 12))        
+        self.copy_prev_btn.setStyleSheet("""
+            QPushButton {
+                color: #f8fafc;
+                background-color: rgba(30, 41, 59, 200);
+                border: 1px solid #475569;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(51, 65, 85, 220);
+                border-color: #38bdf8;
+            }
+        """)
+        self.copy_prev_btn.clicked.connect(self.copy_keypoints_from_prev_frame)
+        self.copy_prev_btn.setToolTip("Copy annotations from previous frame for this view")
+        self.copy_prev_btn.hide()
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.main_win.toggle_maximize_camera(self.camera_id)
@@ -132,6 +153,9 @@ class CameraWidget(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         w_toggle = 0
+        w_delete = 0
+        w_swap = 0
+
         if hasattr(self, 'toggle_view_btn') and self.toggle_view_btn:
             w_toggle = self.toggle_view_btn.sizeHint().width()
             if w_toggle <= 0:
@@ -139,7 +163,6 @@ class CameraWidget(QGraphicsView):
             self.toggle_view_btn.resize(w_toggle, 20)
             self.toggle_view_btn.move(self.width() - w_toggle - 10, 10)
 
-        w_delete = 0
         if hasattr(self, 'delete_ann_btn') and self.delete_ann_btn:
             w_delete = self.delete_ann_btn.sizeHint().width()
             if w_delete <= 0:
@@ -159,6 +182,18 @@ class CameraWidget(QGraphicsView):
             offset_delete = (w_delete + 6) if (hasattr(self, 'delete_ann_btn') and not self.delete_ann_btn.isHidden()) else 0
             offset_x = offset_toggle + offset_delete + 10
             self.swap_lr_btn.move(self.width() - w_swap - offset_x, 10)
+
+        if hasattr(self, 'copy_prev_btn') and self.copy_prev_btn:
+            w_copy = self.copy_prev_btn.sizeHint().width()
+            if w_copy <= 0:
+                w_copy = 28
+            self.copy_prev_btn.resize(w_copy, 20)
+            # Position it left of swap_lr_btn
+            offset_toggle = (w_toggle + 6) if (hasattr(self, 'toggle_view_btn') and not self.toggle_view_btn.isHidden()) else 0
+            offset_delete = (w_delete + 6) if (hasattr(self, 'delete_ann_btn') and not self.delete_ann_btn.isHidden()) else 0
+            offset_swap = (w_swap + 6) if (hasattr(self, 'swap_lr_btn') and not self.swap_lr_btn.isHidden()) else 0
+            offset_x = offset_toggle + offset_delete + offset_swap + 10
+            self.copy_prev_btn.move(self.width() - w_copy - offset_x, 10)
 
     def mousePressEvent(self, event):
         self.setFocus()
@@ -321,6 +356,13 @@ class CameraWidget(QGraphicsView):
         else:
             self.delete_ann_btn.hide()
             self.swap_lr_btn.hide()
+
+        # Show copy_prev_btn if we are not on the first frame of the sequence
+        if self.main_win and self.main_win.current_frame_idx > 0:
+            self.copy_prev_btn.show()
+            self.copy_prev_btn.raise_()
+        else:
+            self.copy_prev_btn.hide()
 
         # Draw keypoints
         keypoints = annotation.get("keypoints", [])
@@ -692,3 +734,63 @@ class CameraWidget(QGraphicsView):
         self.main_win.update_3d_view()
         self.main_win.save_annotations()
         self.main_win.status_bar.showMessage("Left/Right keypoints swapped for this view.", 3000)
+
+    def copy_keypoints_from_prev_frame(self):
+        """Copies keypoints and bounding box from the previous frame for the same camera view."""
+        if not hasattr(self, 'current_annotation') or not self.current_annotation:
+            return
+            
+        main_win = self.main_win
+        if main_win.current_frame_idx <= 0:
+            main_win.status_bar.showMessage("Il n'y a pas de frame précédente.", 3000)
+            return
+            
+        prev_frame_idx = main_win.sorted_frames[main_win.current_frame_idx - 1]
+        key = self.camera_name
+        
+        if prev_frame_idx not in main_win.frame_data or key not in main_win.frame_data[prev_frame_idx]:
+            main_win.status_bar.showMessage(f"Pas de données pour {key} à la frame précédente.", 3000)
+            return
+            
+        prev_img_path = main_win.frame_data[prev_frame_idx][key]
+        prev_img_entry = main_win.img_file_map.get(prev_img_path)
+        if not prev_img_entry:
+            return
+            
+        prev_ann = main_win.img_ann_map.get(prev_img_entry["id"])
+        if not prev_ann:
+            return
+            
+        prev_keypoints = prev_ann.get("keypoints", [])
+        prev_bbox = prev_ann.get("bbox", [])
+        
+        has_prev_kps = prev_keypoints and any(prev_keypoints[idx*3 + 2] > 0 for idx in range(17))
+        has_prev_bbox = prev_bbox and sum(prev_bbox) > 0
+        
+        if not has_prev_kps and not has_prev_bbox:
+            main_win.status_bar.showMessage(f"Pas d'annotations à copier pour la frame précédente de {key}.", 3000)
+            return
+            
+        main_win.push_undo()
+        
+        # Copy keypoints
+        if has_prev_kps:
+            self.current_annotation["keypoints"] = list(prev_keypoints)
+            self.current_annotation["num_keypoints"] = prev_ann.get("num_keypoints", 0)
+        else:
+            self.current_annotation["keypoints"] = [0.0] * 51
+            self.current_annotation["num_keypoints"] = 0
+            
+        # Copy bounding box
+        if has_prev_bbox:
+            self.current_annotation["bbox"] = list(prev_bbox)
+        else:
+            self.current_annotation["bbox"] = [0.0, 0.0, 0.0, 0.0]
+            
+        # Reload current frame
+        self.load_frame(self.current_img_path, self.current_annotation, preserve_view=True)
+        
+        main_win.update_active_widgets_state()
+        main_win.update_3d_view()
+        main_win.save_annotations()
+        main_win.status_bar.showMessage(f"Annotations copiées depuis la frame précédente pour {key}.", 3000)
