@@ -1226,6 +1226,7 @@ class TrampolineAnnotator(QMainWindow):
             
         # Re-enable controls
         self.btn_preprocess_seq.setEnabled(True)
+        self.btn_triangulate.setEnabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         
@@ -1254,6 +1255,7 @@ class TrampolineAnnotator(QMainWindow):
             self.progress_dialog.close()
             
         self.btn_preprocess_seq.setEnabled(True)
+        self.btn_triangulate.setEnabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         self.update_active_widgets_state()
