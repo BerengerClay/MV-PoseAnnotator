@@ -291,7 +291,10 @@ class CameraWidget(QGraphicsView):
             # Reload to update visual skeleton and keypoints
             self.load_frame(self.current_img_path, ann, preserve_view=True)
             self.main_win.update_active_widgets_state()
+            self.main_win.update_3d_view()
             self.main_win.save_annotations()
+            if getattr(self.main_win, 'show_3d_reprojection', False):
+                self.main_win.show_current_frame(preserve_view=True)
 
     def load_frame(self, img_path, annotation, preserve_view=False):
         """Loads and draws image, bbox, keypoints, and skeleton."""
@@ -438,7 +441,7 @@ class CameraWidget(QGraphicsView):
             self.refresh_view()
 
     def get_body_up_vector(self, keypoints):
-        """Finds 2D vector pointing from feet center to shoulders center."""
+        """Finds 2D vector pointing from hips center to shoulders center."""
         # Find shoulders center
         shoulder_pts = []
         for idx in [5, 6]:
@@ -446,33 +449,19 @@ class CameraWidget(QGraphicsView):
             if offset + 2 < len(keypoints) and keypoints[offset+2] > 0:
                 shoulder_pts.append((keypoints[offset], keypoints[offset+1]))
         
-        # Find feet center
-        foot_pts = []
-        for idx in [15, 16]: # ankles
+        # Find hips center
+        hip_pts = []
+        for idx in [11, 12]:
             offset = idx * 3
             if offset + 2 < len(keypoints) and keypoints[offset+2] > 0:
-                foot_pts.append((keypoints[offset], keypoints[offset+1]))
-                
-        # Fallback to knees
-        if not foot_pts:
-            for idx in [13, 14]:
-                offset = idx * 3
-                if offset + 2 < len(keypoints) and keypoints[offset+2] > 0:
-                    foot_pts.append((keypoints[offset], keypoints[offset+1]))
-                    
-        # Fallback to hips
-        if not foot_pts:
-            for idx in [11, 12]:
-                offset = idx * 3
-                if offset + 2 < len(keypoints) and keypoints[offset+2] > 0:
-                    foot_pts.append((keypoints[offset], keypoints[offset+1]))
+                hip_pts.append((keypoints[offset], keypoints[offset+1]))
 
-        if shoulder_pts and foot_pts:
+        if shoulder_pts and hip_pts:
             shoulder_x = sum(p[0] for p in shoulder_pts) / len(shoulder_pts)
             shoulder_y = sum(p[1] for p in shoulder_pts) / len(shoulder_pts)
-            foot_x = sum(p[0] for p in foot_pts) / len(foot_pts)
-            foot_y = sum(p[1] for p in foot_pts) / len(foot_pts)
-            return shoulder_x - foot_x, shoulder_y - foot_y
+            hip_x = sum(p[0] for p in hip_pts) / len(hip_pts)
+            hip_y = sum(p[1] for p in hip_pts) / len(hip_pts)
+            return shoulder_x - hip_x, shoulder_y - hip_y
         return None
 
     def apply_bbox_view(self):
@@ -589,7 +578,10 @@ class CameraWidget(QGraphicsView):
             # Reload to update visual skeleton and keypoints
             self.load_frame(self.current_img_path, ann, preserve_view=True)
             self.main_win.update_active_widgets_state()
+            self.main_win.update_3d_view()
             self.main_win.save_annotations()
+            if getattr(self.main_win, 'show_3d_reprojection', False):
+                self.main_win.show_current_frame(preserve_view=True)
 
     def clear_annotations(self):
         """Completely clears keypoints of this view after confirmation (retains bounding box)."""
@@ -611,7 +603,10 @@ class CameraWidget(QGraphicsView):
             # Reload frame to refresh the canvas and hide buttons
             self.load_frame(self.current_img_path, ann, preserve_view=True)
             self.main_win.update_active_widgets_state()
+            self.main_win.update_3d_view()
             self.main_win.save_annotations()
+            if getattr(self.main_win, 'show_3d_reprojection', False):
+                self.main_win.show_current_frame(preserve_view=True)
 
     def show_insert_keypoint_menu(self):
         """Displays a context menu listing 'Ajouter Bounding Box' if none exists, or missing keypoints if one exists."""
@@ -733,6 +728,8 @@ class CameraWidget(QGraphicsView):
         self.main_win.update_active_widgets_state()
         self.main_win.update_3d_view()
         self.main_win.save_annotations()
+        if getattr(self.main_win, 'show_3d_reprojection', False):
+            self.main_win.show_current_frame(preserve_view=True)
         self.main_win.status_bar.showMessage("Left/Right keypoints swapped for this view.", 3000)
 
     def copy_keypoints_from_prev_frame(self):
@@ -793,4 +790,6 @@ class CameraWidget(QGraphicsView):
         main_win.update_active_widgets_state()
         main_win.update_3d_view()
         main_win.save_annotations()
+        if getattr(main_win, 'show_3d_reprojection', False):
+            main_win.show_current_frame(preserve_view=True)
         main_win.status_bar.showMessage(f"Annotations copiées depuis la frame précédente pour {key}.", 3000)
