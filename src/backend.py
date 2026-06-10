@@ -51,7 +51,7 @@ class ModelWrapper:
             if self.vitpose_model is not None:
                 return
             
-            pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
+            pth_path = os.path.join(self.weights_dir, "base_coco_AP_epoch_227.pth")
             if not os.path.exists(pth_path):
                 raise FileNotFoundError(f"ViTPose weights not found at: {pth_path}")
                 
@@ -81,6 +81,63 @@ class ModelWrapper:
             return [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
             
         return None
+    
+    def resize_and_pad_keep_aspect(self, crop, target_size=(256, 192)):
+        """
+        Resize crop to target_size while keeping aspect ratio, then pad.
+        Args:
+            crop: np.ndarray (H, W, C)
+            target_size: (W_target, H_target)
+        Returns:
+            resized_padded: np.ndarray (H_target, W_target, C)
+            scale: float (resize factor)
+            pad: (pad_left, pad_top)
+        """
+        H_target, W_target = target_size
+        h, w = crop.shape[:2]
+
+        # Compute scale to fit inside target while preserving aspect ratio
+        scale = min(W_target / w, H_target / h)
+        new_w, new_h = int(round(w * scale)), int(round(h * scale))
+
+        resized = cv2.resize(crop, (new_w, new_h))
+
+        # Compute padding to center the resized image
+        pad_x = (W_target - new_w) / 2
+        pad_y = (H_target - new_h) / 2
+
+        pad_left = int(np.floor(pad_x))
+        pad_right = int(np.ceil(pad_x))
+        pad_top = int(np.floor(pad_y))
+        pad_bottom = int(np.ceil(pad_y))
+
+        # Pad with zeros (black)
+        resized_padded = cv2.copyMakeBorder(
+            resized, pad_top, pad_bottom, pad_left, pad_right,
+            borderType=cv2.BORDER_CONSTANT, value=(0, 0, 0)
+        )
+
+        return resized_padded, scale, (pad_left, pad_top)
+    
+    def map_keypoints_to_bbox(self, keypoints, scale, pad):
+        """
+        Map keypoints from model-input space back to bbox-crop space.
+
+        keypoints: (K, 2) — coordinates in the padded+resized model input
+        scale:     float  — uniform scale factor applied during resize_and_pad
+        pad:       (pad_x, pad_y) tensor or tuple
+
+        Uses out-of-place arithmetic so the autograd graph is preserved.
+        The original code used in-place -= and /= which silently detach
+        the tensor from the computation graph when it has requires_grad=True.
+        """
+        pad_x = pad[0].to(keypoints) if torch.is_tensor(pad[0]) else keypoints.new_tensor(pad[0])
+        pad_y = pad[1].to(keypoints) if torch.is_tensor(pad[1]) else keypoints.new_tensor(pad[1])
+
+        x = (keypoints[0] - pad_x) / scale
+        y = (keypoints[1] - pad_y) / scale
+
+        return x, y
 
     def run_vitpose(self, image_path, bbox):
         """Runs ViTPose on the cropped bounding box to get 17 COCO 2D keypoints."""
@@ -106,7 +163,8 @@ class ModelWrapper:
         crop_h, crop_w = crop.shape[:2]
         
         # Preprocess crop: resize to (192, 256) [W, H], normalize, convert to tensor
-        crop_resized = cv2.resize(crop, (192, 256))
+        #crop_resized = cv2.resize(crop, (192, 256))
+        crop_resized, scale, pads = self.resize_and_pad_keep_aspect(crop, target_size=(256, 192))
         crop_rgb = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)
         
         # PIL/timm normalization: mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -136,11 +194,13 @@ class ModelWrapper:
             # Map back to crop coordinates (upsample from 64x48 to 256x192)
             # 256 / 64 = 4.0, 192 / 48 = 4.0
             x_crop = (x_hm + 0.5) * 4.0
-            y_crop = (y_hm + 0.5) * 4.0
-            
+            y_crop = (y_hm + 0.5) * 4.
+
+            x_bbox, y_bbox = self.map_keypoints_to_bbox(torch.tensor([x_crop, y_crop]), scale, pads)
+
             # Map crop coordinates back to original image
-            x_orig = x1 + (x_crop / 192.0) * crop_w
-            y_orig = y1 + (y_crop / 256.0) * crop_h
+            x_orig = float(x1 + x_bbox)
+            y_orig = float(y1 + y_bbox)
             
             # Visibility: 2 = Manual/Confirmed, 1 = Estimated/Low Conf (we mark as 2 by default so user can edit directly)
             keypoints.append([x_orig, y_orig, 2])
@@ -192,7 +252,7 @@ class ModelWrapper:
                 
             crop = img[y1:y2, x1:x2]
             crop_h, crop_w = crop.shape[:2]
-            crop_resized = cv2.resize(crop, (192, 256))
+            crop_resized, scale, pads = self.resize_and_pad_keep_aspect(crop, target_size=(256, 192))
             crop_rgb = cv2.cvtColor(crop_resized, cv2.COLOR_BGR2RGB)
             
             tensor = torch.from_numpy(crop_rgb).float().permute(2, 0, 1) / 255.0
@@ -202,7 +262,7 @@ class ModelWrapper:
             
             tensors.append(tensor)
             valid_indices.append(idx)
-            crop_infos.append((crop_w, crop_h, x1, y1))
+            crop_infos.append((crop_w, crop_h, x1, y1, scale, pads))
             
         results = [None] * len(image_paths)
         if not tensors:
@@ -219,7 +279,7 @@ class ModelWrapper:
         
         for i, idx in enumerate(valid_indices):
             heatmaps = heatmaps_batch[i]
-            crop_w, crop_h, x1, y1 = crop_infos[i]
+            crop_w, crop_h, x1, y1, scale, pads = crop_infos[i]
             
             keypoints = []
             for j in range(17):
@@ -229,9 +289,11 @@ class ModelWrapper:
                 
                 x_crop = (x_hm + 0.5) * 4.0
                 y_crop = (y_hm + 0.5) * 4.0
+
+                x_bbox, y_bbox = self.map_keypoints_to_bbox(torch.tensor([x_crop, y_crop]), scale, pads)
                 
-                x_orig = x1 + (x_crop / 192.0) * crop_w
-                y_orig = y1 + (y_crop / 256.0) * crop_h
+                x_orig = float(x1 + x_bbox)
+                y_orig = float(y1 + y_bbox)
                 
                 keypoints.append([x_orig, y_orig, 2])
             results[idx] = keypoints
