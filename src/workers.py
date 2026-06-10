@@ -1,4 +1,3 @@
-import os
 from PyQt6.QtCore import QThread, pyqtSignal
 from src.constants import CAMERA_KEYS
 

@@ -51,7 +51,8 @@ class ModelWrapper:
             if self.vitpose_model is not None:
                 return
             
-            pth_path = os.path.join(self.weights_dir, "base_coco_AP_epoch_227.pth")
+            # pth_path = os.path.join(self.weights_dir, "base_coco_AP_epoch_227.pth")
+            pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
             if not os.path.exists(pth_path):
                 raise FileNotFoundError(f"ViTPose weights not found at: {pth_path}")
                 
@@ -189,7 +190,7 @@ class ModelWrapper:
             # Get argmax index
             idx = hm.argmax()
             y_hm, x_hm = np.unravel_index(idx, hm.shape)
-            conf = float(hm[y_hm, x_hm])
+            float(hm[y_hm, x_hm])
             
             # Map back to crop coordinates (upsample from 64x48 to 256x192)
             # 256 / 64 = 4.0, 192 / 48 = 4.0
@@ -301,7 +302,7 @@ class ModelWrapper:
         return results
 
 
-def triangulate_and_reproject(keypoints_data, camera_matrices):
+def triangulate_and_reproject(keypoints_data, camera_matrices, calib_data=None):
     """
     Performs 3D Triangulation using SVD on keypoints labeled on 2+ cameras, 
     and reprojects the resulting 3D coordinates onto non-annotated cameras.
@@ -309,11 +310,12 @@ def triangulate_and_reproject(keypoints_data, camera_matrices):
     Args:
         keypoints_data (dict): {cam_id: [[x, y, v], ...]} (17 keypoints per camera)
         camera_matrices (list): list of 8 projection matrices of shape (3x4)
-        
+        calib_data (dict): parsed Calib.toml containing distortion parameters
         
     Returns:
         dict: updated keypoints data with projected estimations
     """
+    from src.constants import CAMERA_KEYS
     updated_keypoints = {cam_id: [kp[:] for kp in kps] for cam_id, kps in keypoints_data.items()}
     
     for kp_idx in range(17):
@@ -333,6 +335,17 @@ def triangulate_and_reproject(keypoints_data, camera_matrices):
         for cam_id in base_cams:
             P = np.array(camera_matrices[cam_id]) # 3x4 projection matrix
             u, v, _ = keypoints_data[cam_id][kp_idx]
+            
+            # Undistort coordinates before DLT linear triangulation if calibration is available
+            key = CAMERA_KEYS[cam_id]
+            model_key = key.split("_")[1] if "_" in key else key
+            if calib_data and model_key in calib_data:
+                K = np.array(calib_data[model_key]["matrix"], dtype=np.float32)
+                distortions = np.array(calib_data[model_key]["distortions"], dtype=np.float32)
+                pt = np.array([[[u, v]]], dtype=np.float32)
+                undistorted_pt = cv2.undistortPoints(pt, K, distortions, R=None, P=K)
+                u, v = undistorted_pt[0, 0]
+                
             A.append(u * P[2, :] - P[0, :])
             A.append(v * P[2, :] - P[1, :])
             
@@ -354,19 +367,34 @@ def triangulate_and_reproject(keypoints_data, camera_matrices):
             # 4. Project the 3D homogeneous point back to all other cameras
             for cam_id in range(8):
                 if cam_id not in base_cams:
-                    P = np.array(camera_matrices[cam_id])
-                    X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
-                    x_proj = P @ X_homog
+                    key = CAMERA_KEYS[cam_id]
+                    model_key = key.split("_")[1] if "_" in key else key
                     
-                    if x_proj[2] != 0:
-                        u_proj = x_proj[0] / x_proj[2]
-                        v_proj = x_proj[1] / x_proj[2]
+                    # Distort coordinate during reprojection if calibration is available
+                    if calib_data and model_key in calib_data:
+                        K = np.array(calib_data[model_key]["matrix"], dtype=np.float32)
+                        distortions = np.array(calib_data[model_key]["distortions"], dtype=np.float32)
+                        rvec = np.array(calib_data[model_key]["rotation"], dtype=np.float32)
+                        tvec = np.array(calib_data[model_key]["translation"], dtype=np.float32)
                         
-                        # Only project if the coordinate is within the 1920x1080 image boundary
-                        if 0.0 <= u_proj <= 1920.0 and 0.0 <= v_proj <= 1080.0:
-                            current_kp = keypoints_data[cam_id][kp_idx]
-                            # Only project if the keypoint is currently absent (v == 0)
-                            if current_kp[2] == 0:
-                                updated_keypoints[cam_id][kp_idx] = [float(u_proj), float(v_proj), 1]
+                        img_pts, _ = cv2.projectPoints(X_3d.reshape(1, 3), rvec, tvec, K, distortions)
+                        u_proj, v_proj = img_pts[0, 0]
+                        valid = True
+                    else:
+                        P = np.array(camera_matrices[cam_id])
+                        X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
+                        x_proj = P @ X_homog
+                        if x_proj[2] != 0:
+                            u_proj = x_proj[0] / x_proj[2]
+                            v_proj = x_proj[1] / x_proj[2]
+                            valid = True
+                        else:
+                            valid = False
+                    
+                    if valid and 0.0 <= u_proj <= 1920.0 and 0.0 <= v_proj <= 1080.0:
+                        current_kp = keypoints_data[cam_id][kp_idx]
+                        # Only project if the keypoint is currently absent (v == 0)
+                        if current_kp[2] == 0:
+                            updated_keypoints[cam_id][kp_idx] = [float(u_proj), float(v_proj), 1]
                                 
     return updated_keypoints

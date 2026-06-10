@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsRe
 from PyQt6.QtGui import QColor, QPen, QBrush, QPainterPath, QPainterPathStroker
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer
 
-from src.constants import COCO_KEYPOINTS, KEYPOINT_COLORS
+from src.constants import KEYPOINT_COLORS
 
 class KeypointItem(QGraphicsEllipseItem):
     """Interactive keypoint dot that updates positions in real-time when dragged."""
@@ -148,6 +148,8 @@ class SkeletonItem(QGraphicsLineItem):
         self.kp2 = kp2
         self.setPen(QPen(color, 2))  # Colored pen
         self.setZValue(3.0)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setEnabled(False)
         self.update_position()
 
     def update_position(self):
@@ -439,6 +441,14 @@ class ReprojectedPointItem(QGraphicsEllipseItem):
         self.setAcceptHoverEvents(False)
         self.setToolTip(f"Reprojected {name} (ID: {point_id})")
         self.setZValue(4.0)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setEnabled(False)
+
+    def set_radius(self, radius):
+        """Update reprojected circle size and border thickness."""
+        self.setRect(-radius, -radius, radius * 2, radius * 2)
+        pen_width = max(1.0, radius / 4.0)
+        self.setPen(QPen(QColor(244, 63, 94), pen_width, Qt.PenStyle.DashLine))
 
 
 class DiscrepancyLineItem(QGraphicsLineItem):
@@ -448,4 +458,6 @@ class DiscrepancyLineItem(QGraphicsLineItem):
         self.setPen(QPen(QColor(244, 63, 94), 1, Qt.PenStyle.DotLine))
         self.setFlags(QGraphicsLineItem.GraphicsItemFlag(0))
         self.setZValue(2.0)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.setEnabled(False)
 

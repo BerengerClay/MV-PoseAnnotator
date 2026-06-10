@@ -2,8 +2,7 @@
 import os
 import requests
 from PyQt6.QtGui import QIcon
-from PyQt6.QtSvg import QSvgRenderer # Si besoin de rendu dynamique
-from PyQt6.QtCore import QByteArray, QSize
+from PyQt6.QtCore import QByteArray
 
 # Optionnel : Cache local pour éviter de re-télécharger à chaque lancement
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lucide_icons")
