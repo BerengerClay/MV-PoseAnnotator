@@ -31,6 +31,7 @@ class KeypointItem(QGraphicsEllipseItem):
         # Group dragging states
         self._is_dragging_group = False
         self._selected_kps_to_drag = []
+        self._selected_bboxes_to_drag = []
         self._drag_start_positions = {}
         self._drag_start_scene = QPointF()
 
@@ -77,40 +78,66 @@ class KeypointItem(QGraphicsEllipseItem):
             selected_items = self.parent_widget.scene.selectedItems()
             self._selected_kps_to_drag = [item for item in selected_items if isinstance(item, KeypointItem)]
             if self not in self._selected_kps_to_drag:
-                self._selected_kps_to_drag = [self]
+                self._selected_kps_to_drag.append(self)
+                
+            self._selected_bboxes_to_drag = [item for item in selected_items if isinstance(item, BBoxItem)]
             
-            # Record starting position for each keypoint in selection
-            self._drag_start_positions = {kp: kp.pos() for kp in self._selected_kps_to_drag}
+            # Record starting position for each item in selection
+            self._drag_start_positions = {}
+            for kp in self._selected_kps_to_drag:
+                self._drag_start_positions[kp] = kp.pos()
+            for bbox in self._selected_bboxes_to_drag:
+                self._drag_start_positions[bbox] = bbox.pos()
+            
             self._drag_start_scene = event.scenePos()
             self._is_dragging_group = True
+            self._has_moved = False
             super().mousePressEvent(event)
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if getattr(self, '_is_dragging_group', False):
+            self._has_moved = True
             delta = event.scenePos() - self._drag_start_scene
             for kp in self._selected_kps_to_drag:
                 start_pos = self._drag_start_positions[kp]
-                new_pos = start_pos + delta
-                kp.setPos(new_pos)
+                kp.setPos(start_pos + delta)
+            for bbox in getattr(self, '_selected_bboxes_to_drag', []):
+                start_pos = self._drag_start_positions[bbox]
+                bbox.setPos(start_pos + delta)
             event.accept()
         else:
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        has_moved = getattr(self, '_has_moved', False)
         if getattr(self, '_is_dragging_group', False):
             self._is_dragging_group = False
+            
+            # Save updated bboxes to memory database
+            for bbox in getattr(self, '_selected_bboxes_to_drag', []):
+                r = bbox.rect()
+                p = bbox.pos()
+                bbox_coords = [float(p.x() + r.x()), float(p.y() + r.y()), float(r.width()), float(r.height())]
+                if bbox.parent_widget and bbox.parent_widget.current_annotation:
+                    bbox.parent_widget.current_annotation["bbox"] = bbox_coords
+
             self._selected_kps_to_drag = []
+            self._selected_bboxes_to_drag = []
             self._drag_start_positions = {}
             event.accept()
         super().mouseReleaseEvent(event)
+        
+        # Deselect if dragged (do this BEFORE reloading the frame to avoid C++ deletion issues)
+        if has_moved and self.scene():
+            self.scene().clearSelection()
+
         if self.parent_widget and self.parent_widget.main_win:
             main_win = self.parent_widget.main_win
             main_win.save_annotations()
             main_win.update_3d_view()
-            if getattr(main_win, 'show_3d_reprojection', False):
-                main_win.show_current_frame(preserve_view=True)
+            main_win.show_current_frame(preserve_view=True)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -174,11 +201,16 @@ class BBoxItem(QGraphicsRectItem):
                       QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable)
         
         self.setAcceptHoverEvents(True)
-        self.handle_size = 14
+        self.handle_size = 8
         self.handles = {} # handle_position_name -> rect
         self.active_handle = None
         self.setZValue(1.0)
         self.update_handles()
+
+        # Group dragging states
+        self._selected_kps_to_drag = []
+        self._selected_bboxes_to_drag = []
+        self._drag_start_positions = {}
 
     def delete_bbox(self):
         # Save updated bounding box to memory database as empty [0,0,0,0]
@@ -204,7 +236,7 @@ class BBoxItem(QGraphicsRectItem):
         border_path.addRect(r)
         
         stroker = QPainterPathStroker()
-        stroker.setWidth(16.0) # Click hitbox thickness
+        stroker.setWidth(6.0) # Click hitbox thickness
         stroked_border = stroker.createStroke(border_path)
         path.addPath(stroked_border)
         
@@ -252,7 +284,7 @@ class BBoxItem(QGraphicsRectItem):
         # 2. Check edges if it's close to the border
         r = self.rect()
         px, py = pos.x(), pos.y()
-        margin = 12.0 # Click margin thickness
+        margin = 4.0 # Click margin thickness
         
         # Check top edge
         if abs(py - r.top()) <= margin and r.left() <= px <= r.right():
@@ -326,7 +358,6 @@ class BBoxItem(QGraphicsRectItem):
                     self.delete_bbox()
                 event.accept()
                 return
-            
             pos = event.pos()
             element = self.get_element_at_pos(pos)
             self.active_handle = element
@@ -335,11 +366,29 @@ class BBoxItem(QGraphicsRectItem):
             
             if element is not None:
                 if ctrl_pressed:
+                    # Save history checkpoint before starting the drag
+                    if self.parent_widget and self.parent_widget.main_win:
+                        self.parent_widget.main_win.push_undo()
+
                     # Move mode
                     self._is_moving = True
                     self._is_resizing = False
                     self._drag_start_pos = event.scenePos()
-                    self._item_start_pos = self.pos()
+                    self._has_moved = False
+                    
+                    # Group drag initialization for BBox move
+                    selected_items = self.parent_widget.scene.selectedItems()
+                    self._selected_kps_to_drag = [item for item in selected_items if isinstance(item, KeypointItem)]
+                    self._selected_bboxes_to_drag = [item for item in selected_items if isinstance(item, BBoxItem)]
+                    if self not in self._selected_bboxes_to_drag:
+                        self._selected_bboxes_to_drag.append(self)
+                        
+                    self._drag_start_positions = {}
+                    for kp in self._selected_kps_to_drag:
+                        self._drag_start_positions[kp] = kp.pos()
+                    for bbox in self._selected_bboxes_to_drag:
+                        self._drag_start_positions[bbox] = bbox.pos()
+
                     self.setCursor(Qt.CursorShape.SizeAllCursor)
                 else:
                     # Resize mode
@@ -353,9 +402,15 @@ class BBoxItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, event):
         if getattr(self, '_is_moving', False):
+            self._has_moved = True
             # Translate position in scene coordinates
             delta = event.scenePos() - self._drag_start_pos
-            self.setPos(self._item_start_pos + delta)
+            for kp in getattr(self, '_selected_kps_to_drag', []):
+                start_pos = self._drag_start_positions[kp]
+                kp.setPos(start_pos + delta)
+            for bbox in getattr(self, '_selected_bboxes_to_drag', []):
+                start_pos = self._drag_start_positions[bbox]
+                bbox.setPos(start_pos + delta)
             event.accept()
         elif getattr(self, '_is_resizing', False) and self.active_handle:
             r = self._resize_start_rect
@@ -401,8 +456,39 @@ class BBoxItem(QGraphicsRectItem):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if getattr(self, '_is_moving', False) or getattr(self, '_is_resizing', False):
+        if getattr(self, '_is_moving', False):
             self._is_moving = False
+            
+            # Save updated bboxes to memory database
+            for bbox in getattr(self, '_selected_bboxes_to_drag', []):
+                r = bbox.rect()
+                p = bbox.pos()
+                bbox_coords = [float(p.x() + r.x()), float(p.y() + r.y()), float(r.width()), float(r.height())]
+                if bbox.parent_widget and bbox.parent_widget.current_annotation:
+                    bbox.parent_widget.current_annotation["bbox"] = bbox_coords
+            
+            # Clear variables
+            self._selected_kps_to_drag = []
+            self._selected_bboxes_to_drag = []
+            self._drag_start_positions = {}
+            self.active_handle = None
+            
+            # Update hover cursor shape cleanly
+            self.update_cursor_shape(event.pos(), event.modifiers())
+            
+            # Clear selection if dragged (do this BEFORE reloading the frame/deleting items)
+            if getattr(self, '_has_moved', False) and self.scene():
+                self.scene().clearSelection()
+
+            # Trigger save/3d updates
+            if self.parent_widget and self.parent_widget.main_win:
+                main_win = self.parent_widget.main_win
+                main_win.save_annotations()
+                main_win.update_3d_view()
+                main_win.show_current_frame(preserve_view=True)
+            
+            event.accept()
+        elif getattr(self, '_is_resizing', False):
             self._is_resizing = False
             self.active_handle = None
             
