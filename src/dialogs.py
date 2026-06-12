@@ -142,7 +142,8 @@ class SettingsDialog(QDialog):
             "• BBox border lines: Drag to resize edge<br>"
             "• Ctrl + BBox border: Drag to Translate/Move bounding box<br>"
             "• Right-click + Drag: Pan zoomed camera canvas<br>"
-            "• Mouse Wheel: Zoom in/out of camera canvas<br><br>"
+            "• Mouse Wheel: Zoom in/out of camera canvas<br>"
+            "• Click 3D Box icon on view overlay: Triangulate keypoints from other views onto this view<br><br>"
             "<b>Keyboard Actions:</b><br>"
             "• Delete / Backspace: Delete selected keypoint/BBox<br>"
             "• Delete + Left Click: Click-delete keypoint/BBox<br>"
@@ -151,7 +152,6 @@ class SettingsDialog(QDialog):
             "  - <b>Left / Right Arrow</b>: Frame Navigation<br>"
             "  - <b>Escape</b>: Reset to 8-view Grid Mode<br>"
             "  - <b>Y</b>: Run ViTPose on maximized view's bounding box<br>"
-            "  - <b>T</b>: Run 3D Triangulation & projection<br>"
             "  - <b>S</b>: Save sequence annotations to JSON file"
         )
         lbl_help = QLabel(help_text)

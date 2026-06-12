@@ -33,7 +33,7 @@ from src.dialogs import (
     select_multiple_directories,
 )
 from src.visualizer3d import Visualizer3DWindow, Visualizer3DWidget
-from src.backend import ModelWrapper, triangulate_and_reproject
+from src.backend import ModelWrapper
 from src.icons import get_lucide_icon
 
 
@@ -253,13 +253,6 @@ class TrampolineAnnotator(QMainWindow):
         self.btn_next_view.hide()
 
         # AI commands and Triangulation
-        self.btn_triangulate = QPushButton("Triangulate")
-        self.btn_triangulate.setIcon(get_lucide_icon("box", color="#ffffff"))
-        self.btn_triangulate.clicked.connect(self.trigger_triangulation)
-        self.btn_triangulate.setStyleSheet("background-color: #059669; color: white;")
-        self.btn_triangulate.setToolTip(
-            "Triangulate points labeled in 2+ cams and reproject on remaining views"
-        )
 
         self.btn_preprocess_seq = QPushButton("Preprocess Sequence")
         self.btn_preprocess_seq.setIcon(get_lucide_icon("sparkles", color="#ffffff"))
@@ -367,7 +360,6 @@ class TrampolineAnnotator(QMainWindow):
         sidebar.addSpacing(15)
         sidebar.addWidget(self.btn_preprocess_seq)
         sidebar.addWidget(self.btn_zoom_all)
-        sidebar.addWidget(self.btn_triangulate)
         sidebar.addSpacing(15)
 
         sidebar.addStretch()  # Push everything below to the bottom!
@@ -420,7 +412,6 @@ class TrampolineAnnotator(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, self.next_frame)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.reset_camera_grid)
         QShortcut(QKeySequence(Qt.Key.Key_Y), self, self.trigger_yolo_vitpose)
-        QShortcut(QKeySequence(Qt.Key.Key_T), self, self.trigger_triangulation)
         QShortcut(QKeySequence(Qt.Key.Key_S), self, self.save_annotations)
 
         # Undo/Redo keyboard shortcuts
@@ -1092,15 +1083,22 @@ class TrampolineAnnotator(QMainWindow):
             self.sequence_dir is not None and len(self.sorted_frames) > 0
         )
 
-        # Update ViTPose buttons state on all camera views
+        # Update ViTPose and Triangulation buttons state on all camera views
         worker_running = self.active_worker is not None and self.active_worker.isRunning()
         self.set_vitpose_buttons_enabled(not worker_running)
+        self.set_triangulation_buttons_enabled(not worker_running)
 
     def set_vitpose_buttons_enabled(self, enabled):
         """Enables or disables the ViTPose button on all camera widgets."""
         for cam in self.camera_widgets:
             if hasattr(cam, "vitpose_btn") and cam.vitpose_btn:
                 cam.vitpose_btn.setEnabled(enabled)
+
+    def set_triangulation_buttons_enabled(self, enabled):
+        """Enables or disables the Triangulate button on all camera widgets."""
+        for cam in self.camera_widgets:
+            if hasattr(cam, "triangulate_btn") and cam.triangulate_btn:
+                cam.triangulate_btn.setEnabled(enabled)
 
     def toggle_maximize_camera(self, cam_id):
         """Maximizes double-clicked view to occupy full window space, or returns to grid."""
@@ -1257,7 +1255,7 @@ class TrampolineAnnotator(QMainWindow):
         self.status_bar.showMessage(
             f"Running ViTPose on camera {camera_id} in background..."
         )
-        self.btn_triangulate.setEnabled(False)
+        self.set_triangulation_buttons_enabled(False)
         self.update_active_widgets_state()
 
         # Start background worker
@@ -1277,7 +1275,7 @@ class TrampolineAnnotator(QMainWindow):
         keypoints = result["keypoints"]
 
         self.status_bar.showMessage(f"Inference completed for camera {cam_id}.", 3000)
-        self.btn_triangulate.setEnabled(True)
+        self.set_triangulation_buttons_enabled(True)
         self.update_active_widgets_state()
 
         # 1. Update bbox in model
@@ -1310,78 +1308,126 @@ class TrampolineAnnotator(QMainWindow):
         QMessageBox.critical(
             self, "Model Error", f"An error occurred during inference:\n{err_msg}"
         )
-        self.btn_triangulate.setEnabled(True)
+        self.set_triangulation_buttons_enabled(True)
         self.update_active_widgets_state()
 
-    def trigger_triangulation(self):
-        """Runs Direct Linear Transformation 3D Triangulation and projects results."""
+
+    def triangulate_view(self, cam_id):
+        """Runs triangulation on other views and places/projects the resulting points on this camera view."""
         if self.active_worker and self.active_worker.isRunning():
             return
+        
         self.push_undo()
         frame_idx = self.sorted_frames[self.current_frame_idx]
 
-        # Collect keypoints from all cameras of the current frame
+        # 1. Collect keypoints from all cameras
         keypoints_data = {}
-        for cam_id, key in enumerate(CAMERA_KEYS):
+        for c_id, key in enumerate(CAMERA_KEYS):
             if key in self.frame_data[frame_idx]:
                 img_path = self.frame_data[frame_idx][key]
                 img_id = self.img_file_map[img_path]["id"]
                 flat_kps = self.img_ann_map[img_id]["keypoints"]
-
-                # Reshape keypoints flat list to lists of [x, y, v]
                 kps = []
                 for i in range(17):
-                    kps.append(
-                        [flat_kps[i * 3], flat_kps[i * 3 + 1], flat_kps[i * 3 + 2]]
-                    )
-                keypoints_data[cam_id] = kps
+                    kps.append([flat_kps[i * 3], flat_kps[i * 3 + 1], flat_kps[i * 3 + 2]])
+                keypoints_data[c_id] = kps
             else:
-                keypoints_data[cam_id] = [[0.0, 0.0, 0]] * 17
+                keypoints_data[c_id] = [[0.0, 0.0, 0]] * 17
 
-        # Convert projection matrices dict to lists matching CAMERA_KEYS order
+        # 2. Build list of projection matrices
         matrices_list = []
         for key in CAMERA_KEYS:
             if key in self.camera_matrices:
                 matrices_list.append(self.camera_matrices[key])
             else:
-                # Identity matrix fallback (should not occur if config is correct)
                 matrices_list.append([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
 
-        # Execute triangulation math
-        try:
-            updated_kps = triangulate_and_reproject(
-                keypoints_data, matrices_list, self.calib_data
-            )
-
-            # Save predictions back to memory database
-            for cam_id, kps in updated_kps.items():
-                key = CAMERA_KEYS[cam_id]
-                if key in self.frame_data[frame_idx]:
-                    img_path = self.frame_data[frame_idx][key]
-                    img_id = self.img_file_map[img_path]["id"]
-                    ann = self.img_ann_map[img_id]
-
-                    flat_kps = []
-                    for kp in kps:
-                        flat_kps.extend(kp)
-                    ann["keypoints"] = flat_kps
-                    ann["num_keypoints"] = sum(
-                        1 for idx in range(17) if flat_kps[idx * 3 + 2] > 0
-                    )
-
-                    # Refresh widget display
-                    self.camera_widgets[cam_id].load_frame(img_path, ann)
-
-            self.status_bar.showMessage(
-                "Triangulation and reprojection completed successfully.", 4000
-            )
-            self.save_annotations()
-            self.global_3d_bounds = self.calculate_global_3d_bounds()
-            self.update_3d_view()
-        except Exception as e:
-            QMessageBox.critical(
-                self, "Triangulation Error", f"Could not perform triangulation:\n{e}"
-            )
+        # 3. Perform triangulation and project onto target cam_id
+        # We want to use all other cameras to perform the triangulation for cam_id
+        updated_count = 0
+        target_key = CAMERA_KEYS[cam_id]
+        if target_key in self.frame_data[frame_idx]:
+            img_path = self.frame_data[frame_idx][target_key]
+            img_id = self.img_file_map[img_path]["id"]
+            ann = self.img_ann_map[img_id]
+            flat_kps = list(ann["keypoints"])
+            
+            for kp_idx in range(17):
+                # Identify other cameras with valid annotations for this keypoint
+                base_cams = []
+                for c_id in range(8):
+                    if c_id != cam_id:
+                        kp = keypoints_data[c_id][kp_idx]
+                        if kp[2] > 0:
+                            base_cams.append(c_id)
+                
+                if len(base_cams) < 2:
+                    continue
+                
+                # Build SVD matrix A from other views
+                A = []
+                for c_id in base_cams:
+                    P = np.array(matrices_list[c_id])
+                    u, v, _ = keypoints_data[c_id][kp_idx]
+                    
+                    # Undistort
+                    key = CAMERA_KEYS[c_id]
+                    model_key = key.split("_")[1] if "_" in key else key
+                    if self.calib_data and model_key in self.calib_data:
+                        K = np.array(self.calib_data[model_key]["matrix"], dtype=np.float32)
+                        distortions = np.array(self.calib_data[model_key]["distortions"], dtype=np.float32)
+                        pt = np.array([[[u, v]]], dtype=np.float32)
+                        undistorted_pt = cv2.undistortPoints(pt, K, distortions, R=None, P=K)
+                        u, v = undistorted_pt[0, 0]
+                        
+                    A.append(u * P[2, :] - P[0, :])
+                    A.append(v * P[2, :] - P[1, :])
+                
+                A = np.array(A)
+                _, _, Vt = np.linalg.svd(A)
+                X = Vt[-1, :]
+                if X[3] != 0:
+                    X = X / X[3]
+                    X_3d = X[:3]
+                    
+                    # Project back onto target camera cam_id
+                    target_model_key = target_key.split("_")[1] if "_" in target_key else target_key
+                    if self.calib_data and target_model_key in self.calib_data:
+                        K = np.array(self.calib_data[target_model_key]["matrix"], dtype=np.float32)
+                        distortions = np.array(self.calib_data[target_model_key]["distortions"], dtype=np.float32)
+                        rvec = np.array(self.calib_data[target_model_key]["rotation"], dtype=np.float32)
+                        tvec = np.array(self.calib_data[target_model_key]["translation"], dtype=np.float32)
+                        
+                        img_pts, _ = cv2.projectPoints(X_3d.reshape(1, 3), rvec, tvec, K, distortions)
+                        u_proj, v_proj = img_pts[0, 0]
+                        valid = True
+                    else:
+                        P = np.array(matrices_list[cam_id])
+                        X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
+                        x_proj = P @ X_homog
+                        if x_proj[2] != 0:
+                            u_proj = x_proj[0] / x_proj[2]
+                            v_proj = x_proj[1] / x_proj[2]
+                            valid = True
+                        else:
+                            valid = False
+                            
+                    if valid and 0.0 <= u_proj <= 1920.0 and 0.0 <= v_proj <= 1080.0:
+                        flat_kps[kp_idx * 3] = float(u_proj)
+                        flat_kps[kp_idx * 3 + 1] = float(v_proj)
+                        flat_kps[kp_idx * 3 + 2] = 2.0  # Labeled/confirmed via triangulation
+                        updated_count += 1
+            
+            if updated_count > 0:
+                ann["keypoints"] = flat_kps
+                ann["num_keypoints"] = sum(1 for idx in range(17) if flat_kps[idx * 3 + 2] > 0)
+                self.camera_widgets[cam_id].load_frame(img_path, ann)
+                self.save_annotations()
+                self.global_3d_bounds = self.calculate_global_3d_bounds()
+                self.update_3d_view()
+                self.status_bar.showMessage(f"Triangulated and placed {updated_count} points on view {cam_id}.", 3000)
+            else:
+                self.status_bar.showMessage("Could not triangulate any points (need 2+ other views annotated).", 3000)
 
     def run_sequence_preprocessing(self):
         """Spawns a progress dialog and starts background batch preprocessing of all frames."""
@@ -1456,7 +1502,7 @@ class TrampolineAnnotator(QMainWindow):
 
         # Disable controls
         self.btn_preprocess_seq.setEnabled(False)
-        self.btn_triangulate.setEnabled(False)
+        self.set_triangulation_buttons_enabled(False)
         self.btn_prev.setEnabled(False)
         self.btn_next.setEnabled(False)
         self.update_active_widgets_state()
@@ -1479,7 +1525,7 @@ class TrampolineAnnotator(QMainWindow):
 
         # Re-enable controls
         self.btn_preprocess_seq.setEnabled(True)
-        self.btn_triangulate.setEnabled(True)
+        self.set_triangulation_buttons_enabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
 
@@ -1509,7 +1555,7 @@ class TrampolineAnnotator(QMainWindow):
             self.progress_dialog.close()
 
         self.btn_preprocess_seq.setEnabled(True)
-        self.btn_triangulate.setEnabled(True)
+        self.set_triangulation_buttons_enabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
         self.update_active_widgets_state()

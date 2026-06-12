@@ -182,6 +182,27 @@ class CameraWidget(QGraphicsView):
         self.vitpose_btn.setToolTip("Run ViTPose on this view's bounding box")
         self.vitpose_btn.hide()
 
+        # Run Triangulation on this view
+        self.triangulate_btn = QPushButton(self)
+        self.triangulate_btn.setIcon(get_lucide_icon("box", color="#f8fafc"))
+        self.triangulate_btn.setIconSize(QSize(12, 12))
+        self.triangulate_btn.setStyleSheet("""
+            QPushButton {
+                color: #f8fafc;
+                background-color: rgba(30, 41, 59, 200);
+                border: 1px solid #475569;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(51, 65, 85, 220);
+                border-color: #38bdf8;
+            }
+        """)
+        self.triangulate_btn.clicked.connect(self.run_triangulation_on_this_view)
+        self.triangulate_btn.setToolTip("Triangulate points from other views and place on this view")
+        self.triangulate_btn.hide()
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.main_win.toggle_maximize_camera(self.camera_id)
@@ -318,6 +339,46 @@ class CameraWidget(QGraphicsView):
             )
             offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + 10
             self.vitpose_btn.move(self.width() - w_vit - offset_x, 10)
+
+        if hasattr(self, "triangulate_btn") and self.triangulate_btn:
+            w_tri = self.triangulate_btn.sizeHint().width()
+            if w_tri <= 0:
+                w_tri = 28
+            self.triangulate_btn.resize(w_tri, 20)
+            # Position it left of vitpose_btn
+            offset_toggle = (
+                (w_toggle + 6)
+                if (
+                    hasattr(self, "toggle_view_btn")
+                    and not self.toggle_view_btn.isHidden()
+                )
+                else 0
+            )
+            offset_delete = (
+                (w_delete + 6)
+                if (
+                    hasattr(self, "delete_ann_btn")
+                    and not self.delete_ann_btn.isHidden()
+                )
+                else 0
+            )
+            offset_swap = (
+                (w_swap + 6)
+                if (hasattr(self, "swap_lr_btn") and not self.swap_lr_btn.isHidden())
+                else 0
+            )
+            offset_copy = (
+                (w_copy + 6)
+                if (hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden())
+                else 0
+            )
+            offset_vit = (
+                (w_vit + 6)
+                if (hasattr(self, "vitpose_btn") and not self.vitpose_btn.isHidden())
+                else 0
+            )
+            offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + offset_vit + 10
+            self.triangulate_btn.move(self.width() - w_tri - offset_x, 10)
 
     def mousePressEvent(self, event):
         self.setFocus()
@@ -531,6 +592,13 @@ class CameraWidget(QGraphicsView):
             self.copy_prev_btn.raise_()
         else:
             self.copy_prev_btn.hide()
+
+        # Show triangulate_btn if sequence is loaded
+        if self.main_win and self.main_win.sequence_dir is not None:
+            self.triangulate_btn.show()
+            self.triangulate_btn.raise_()
+        else:
+            self.triangulate_btn.hide()
 
         # Draw keypoints
         keypoints = annotation.get("keypoints", [])
@@ -992,6 +1060,10 @@ class CameraWidget(QGraphicsView):
     def run_vitpose_on_this_view(self):
         """Triggers ViTPose inference on this camera view's bounding box."""
         self.main_win.trigger_yolo_vitpose(self.camera_id)
+
+    def run_triangulation_on_this_view(self):
+        """Runs triangulation using other views and places points on this camera view."""
+        self.main_win.triangulate_view(self.camera_id)
 
     def swap_left_right_keypoints(self):
         """Swaps left and right keypoints in the current annotation for this view."""
