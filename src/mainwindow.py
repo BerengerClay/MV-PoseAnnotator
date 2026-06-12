@@ -235,12 +235,6 @@ class TrampolineAnnotator(QMainWindow):
         # AI commands and Triangulation
         ai_tri_layout = QHBoxLayout()
 
-        self.btn_yolo_vit = QPushButton("Run ViTPose")
-        self.btn_yolo_vit.setIcon(get_lucide_icon("cpu", color="#f8fafc"))
-        self.btn_yolo_vit.clicked.connect(self.trigger_yolo_vitpose)
-        self.btn_yolo_vit.setEnabled(False)
-        self.btn_yolo_vit.setToolTip("Run ViTPose on the current active bounding box")
-
         self.btn_triangulate = QPushButton("Triangulate")
         self.btn_triangulate.setIcon(get_lucide_icon("box", color="#ffffff"))
         self.btn_triangulate.clicked.connect(self.trigger_triangulation)
@@ -249,7 +243,6 @@ class TrampolineAnnotator(QMainWindow):
             "Triangulate points labeled in 2+ cams and reproject on remaining views"
         )
 
-        ai_tri_layout.addWidget(self.btn_yolo_vit)
         ai_tri_layout.addWidget(self.btn_triangulate)
 
         self.btn_preprocess_seq = QPushButton("Preprocess Sequence")
@@ -941,6 +934,9 @@ class TrampolineAnnotator(QMainWindow):
 
         self.btn_preprocess_seq.setEnabled(True)
 
+        # Defer zoom to bounding boxes until layout finishes resizing at startup or sequence load
+        QTimer.singleShot(0, self.zoom_all_bboxes)
+
         unannotated_count = 0
         for img in self.coco_data.get("images", []):
             ann = self.img_ann_map.get(img["id"])
@@ -1065,19 +1061,23 @@ class TrampolineAnnotator(QMainWindow):
         maximized_id = self.get_maximized_camera_id()
         if maximized_id is not None:
             self.mode_lbl.setText(f"Maximized: {CAMERA_KEYS[maximized_id]}")
-            self.btn_yolo_vit.setEnabled(True)
-            # Check if active view has a bbox
-            self.camera_widgets[maximized_id]
-            # self.btn_zoom.setEnabled(cam.bbox_item is not None)
         else:
             self.mode_lbl.setText("Grid Mode (Double click view to zoom)")
-            self.btn_yolo_vit.setEnabled(False)
-            # self.btn_zoom.setEnabled(False)
 
         # Enable zoom all if a sequence is loaded and has frames
         self.btn_zoom_all.setEnabled(
             self.sequence_dir is not None and len(self.sorted_frames) > 0
         )
+
+        # Update ViTPose buttons state on all camera views
+        worker_running = self.active_worker is not None and self.active_worker.isRunning()
+        self.set_vitpose_buttons_enabled(not worker_running)
+
+    def set_vitpose_buttons_enabled(self, enabled):
+        """Enables or disables the ViTPose button on all camera widgets."""
+        for cam in self.camera_widgets:
+            if hasattr(cam, "vitpose_btn") and cam.vitpose_btn:
+                cam.vitpose_btn.setEnabled(enabled)
 
     def toggle_maximize_camera(self, cam_id):
         """Maximizes double-clicked view to occupy full window space, or returns to grid."""
@@ -1170,10 +1170,11 @@ class TrampolineAnnotator(QMainWindow):
             self.save_annotations()
             self.update_3d_view()
 
-    def trigger_yolo_vitpose(self):
-        """Triggers the background thread to run ViTPose on the active view's bounding box."""
-        maximized_id = self.get_maximized_camera_id()
-        if maximized_id is None:
+    def trigger_yolo_vitpose(self, camera_id=None):
+        """Triggers the background thread to run ViTPose on the specified camera's bounding box."""
+        if camera_id is False or camera_id is None:
+            camera_id = self.get_maximized_camera_id()
+        if camera_id is None:
             return
 
         if self.active_worker and self.active_worker.isRunning():
@@ -1181,7 +1182,7 @@ class TrampolineAnnotator(QMainWindow):
             return
 
         frame_idx = self.sorted_frames[self.current_frame_idx]
-        cam_key = CAMERA_KEYS[maximized_id]
+        cam_key = CAMERA_KEYS[camera_id]
         img_path = self.frame_data[frame_idx][cam_key]
         img_entry = self.img_file_map[img_path]
         ann = self.img_ann_map[img_entry["id"]]
@@ -1191,21 +1192,21 @@ class TrampolineAnnotator(QMainWindow):
             QMessageBox.warning(
                 self,
                 "No Bounding Box",
-                "Please draw a bounding box first (Shift + Drag) on this view.",
+                f"Please draw a bounding box first (Shift + Drag) on camera {camera_id + 1}.",
             )
             return
 
         self.status_bar.showMessage(
-            f"Running ViTPose on camera {maximized_id} in background..."
+            f"Running ViTPose on camera {camera_id} in background..."
         )
-        self.btn_yolo_vit.setEnabled(False)
         self.btn_triangulate.setEnabled(False)
+        self.update_active_widgets_state()
 
         # Start background worker
         self.active_worker = WorkerThread(
             task_type="vitpose_only",
             model_wrapper=self.model_wrapper,
-            args={"image_path": img_path, "camera_id": maximized_id, "bbox": bbox},
+            args={"image_path": img_path, "camera_id": camera_id, "bbox": bbox},
         )
         self.active_worker.finished.connect(self.on_yolo_vitpose_finished)
         self.active_worker.error.connect(self.on_worker_error)
@@ -1218,7 +1219,6 @@ class TrampolineAnnotator(QMainWindow):
         keypoints = result["keypoints"]
 
         self.status_bar.showMessage(f"Inference completed for camera {cam_id}.", 3000)
-        self.btn_yolo_vit.setEnabled(True)
         self.btn_triangulate.setEnabled(True)
         self.update_active_widgets_state()
 
@@ -1252,7 +1252,6 @@ class TrampolineAnnotator(QMainWindow):
         QMessageBox.critical(
             self, "Model Error", f"An error occurred during inference:\n{err_msg}"
         )
-        self.btn_yolo_vit.setEnabled(True)
         self.btn_triangulate.setEnabled(True)
         self.update_active_widgets_state()
 
@@ -1399,10 +1398,10 @@ class TrampolineAnnotator(QMainWindow):
 
         # Disable controls
         self.btn_preprocess_seq.setEnabled(False)
-        self.btn_yolo_vit.setEnabled(False)
         self.btn_triangulate.setEnabled(False)
         self.btn_prev.setEnabled(False)
         self.btn_next.setEnabled(False)
+        self.update_active_widgets_state()
 
         self.preprocess_worker.start()
 

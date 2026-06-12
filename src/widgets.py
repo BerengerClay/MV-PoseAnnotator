@@ -161,6 +161,27 @@ class CameraWidget(QGraphicsView):
         )
         self.copy_prev_btn.hide()
 
+        # Run ViTPose button on this view
+        self.vitpose_btn = QPushButton(self)
+        self.vitpose_btn.setIcon(get_lucide_icon("cpu", color="#f8fafc"))
+        self.vitpose_btn.setIconSize(QSize(12, 12))
+        self.vitpose_btn.setStyleSheet("""
+            QPushButton {
+                color: #f8fafc;
+                background-color: rgba(30, 41, 59, 200);
+                border: 1px solid #475569;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(51, 65, 85, 220);
+                border-color: #38bdf8;
+            }
+        """)
+        self.vitpose_btn.clicked.connect(self.run_vitpose_on_this_view)
+        self.vitpose_btn.setToolTip("Run ViTPose on this view's bounding box")
+        self.vitpose_btn.hide()
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.main_win.toggle_maximize_camera(self.camera_id)
@@ -175,6 +196,7 @@ class CameraWidget(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.refresh_view()
         self.update_button_positions()
 
     def update_button_positions(self):
@@ -182,6 +204,7 @@ class CameraWidget(QGraphicsView):
         w_toggle = 0
         w_delete = 0
         w_swap = 0
+        w_copy = 0
 
         if hasattr(self, "toggle_view_btn") and self.toggle_view_btn:
             w_toggle = self.toggle_view_btn.sizeHint().width()
@@ -261,6 +284,41 @@ class CameraWidget(QGraphicsView):
             offset_x = offset_toggle + offset_delete + offset_swap + 10
             self.copy_prev_btn.move(self.width() - w_copy - offset_x, 10)
 
+        if hasattr(self, "vitpose_btn") and self.vitpose_btn:
+            w_vit = self.vitpose_btn.sizeHint().width()
+            if w_vit <= 0:
+                w_vit = 28
+            self.vitpose_btn.resize(w_vit, 20)
+            # Position it left of copy_prev_btn
+            offset_toggle = (
+                (w_toggle + 6)
+                if (
+                    hasattr(self, "toggle_view_btn")
+                    and not self.toggle_view_btn.isHidden()
+                )
+                else 0
+            )
+            offset_delete = (
+                (w_delete + 6)
+                if (
+                    hasattr(self, "delete_ann_btn")
+                    and not self.delete_ann_btn.isHidden()
+                )
+                else 0
+            )
+            offset_swap = (
+                (w_swap + 6)
+                if (hasattr(self, "swap_lr_btn") and not self.swap_lr_btn.isHidden())
+                else 0
+            )
+            offset_copy = (
+                (w_copy + 6)
+                if (hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden())
+                else 0
+            )
+            offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + 10
+            self.vitpose_btn.move(self.width() - w_vit - offset_x, 10)
+
     def mousePressEvent(self, event):
         self.setFocus()
         # Shift + Left click drag to draw manual bounding box
@@ -281,6 +339,7 @@ class CameraWidget(QGraphicsView):
         elif event.button() == Qt.MouseButton.RightButton:
             self._panning = True
             self._pan_start = event.pos()
+            self._right_click_start = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
         else:
@@ -318,6 +377,14 @@ class CameraWidget(QGraphicsView):
             self._panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
+
+            # Check if it was a right-click without drag (panning distance is small)
+            click_start = getattr(self, "_right_click_start", None)
+            if click_start is not None:
+                drag_dist = (event.pos() - click_start).manhattanLength()
+                self._right_click_start = None
+                if drag_dist < 5:
+                    self.show_insert_keypoint_menu()
         else:
             super().mouseReleaseEvent(event)
 
@@ -440,9 +507,14 @@ class CameraWidget(QGraphicsView):
                 configure_button(self.toggle_view_btn, icon_name="minimize-2")
             else:
                 configure_button(self.toggle_view_btn, icon_name="maximize-2")
+
+            # Show ViTPose button on this view since a bounding box exists
+            self.vitpose_btn.show()
+            self.vitpose_btn.raise_()
         else:
             self.bbox_item = None
             self.toggle_view_btn.hide()
+            self.vitpose_btn.hide()
 
         if has_keypoints:
             self.delete_ann_btn.show()
@@ -916,6 +988,10 @@ class CameraWidget(QGraphicsView):
                 self.load_frame(self.current_img_path, ann, preserve_view=True)
                 self.main_win.update_active_widgets_state()
                 self.main_win.save_annotations()
+
+    def run_vitpose_on_this_view(self):
+        """Triggers ViTPose inference on this camera view's bounding box."""
+        self.main_win.trigger_yolo_vitpose(self.camera_id)
 
     def swap_left_right_keypoints(self):
         """Swaps left and right keypoints in the current annotation for this view."""
