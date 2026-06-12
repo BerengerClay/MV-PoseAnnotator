@@ -48,3 +48,6 @@ trash/
 # Operating System
 .DS_Store
 Thumbs.db
+
+# User local settings / session
+configs/local_settings.json

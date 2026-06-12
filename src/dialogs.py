@@ -219,6 +219,11 @@ class SettingsDialog(QDialog):
         if self.parent_win:
             self.parent_win.realtime_triangulation_enabled = checked
 
+    def accept(self):
+        if self.parent_win:
+            self.parent_win.save_local_settings()
+        super().accept()
+
     def reject(self):
         if self.parent_win:
             self.parent_win.update_keypoint_sizes(self.original_kp_radius)

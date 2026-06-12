@@ -37,6 +37,9 @@ from src.backend import ModelWrapper, triangulate_and_reproject
 from src.icons import get_lucide_icon
 
 
+SETTINGS_FILE = os.path.join("configs", "local_settings.json")
+
+
 class TrampolineAnnotator(QMainWindow):
     def __init__(self, paths=None):
         super().__init__()
@@ -63,16 +66,19 @@ class TrampolineAnnotator(QMainWindow):
         self.camera_matrices = self.load_camera_matrices()
         self.calib_data = self.load_calib_data()
 
+        # Load local settings
+        saved_settings = self.load_local_settings() or {}
+
         # Deep learning models
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model_wrapper = ModelWrapper(weights_dir=None, device=self.device)
         self.active_worker = None
-        self.keypoint_radius = 3  # Default radius
+        self.keypoint_radius = saved_settings.get("keypoint_radius", 3)
         self.visualizer_3d_window = None
-        self.auto_rotate_enabled = True
+        self.auto_rotate_enabled = saved_settings.get("auto_rotate_enabled", True)
         self.global_3d_bounds = None
-        self.show_3d_reprojection = False
-        self.realtime_triangulation_enabled = False
+        self.show_3d_reprojection = saved_settings.get("show_3d_reprojection", False)
+        self.realtime_triangulation_enabled = saved_settings.get("realtime_triangulation_enabled", False)
 
         # History stacks for Undo/Redo
         self.undo_stack = []
@@ -83,11 +89,34 @@ class TrampolineAnnotator(QMainWindow):
         self.apply_dark_style()
         self.setup_shortcuts()
 
-        # Load sequence if provided via argument, otherwise prompt directory selection on startup
+        # Load sequence if provided via argument, otherwise check saved session, else prompt
         if paths:
             self.load_sequence_from_cli_paths(paths)
         else:
-            self.prompt_select_sequence()
+            saved_dirs = saved_settings.get("camera_dirs")
+            dirs_valid = False
+            resolved_dirs = {}
+            if isinstance(saved_dirs, dict) and len(saved_dirs) == len(CAMERA_KEYS):
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                dirs_valid = True
+                for k, path in saved_dirs.items():
+                    if os.path.isdir(path):
+                        resolved_dirs[k] = os.path.abspath(path)
+                    else:
+                        full_path = os.path.abspath(os.path.join(project_root, path))
+                        if os.path.isdir(full_path):
+                            resolved_dirs[k] = full_path
+                        else:
+                            dirs_valid = False
+                            break
+            
+            if dirs_valid:
+                self.camera_dirs = resolved_dirs
+                first_dir = next(iter(self.camera_dirs.values()))
+                self.sequence_dir = os.path.dirname(first_dir)
+                self.load_sequence_from_dirs(self.camera_dirs)
+            else:
+                self.prompt_select_sequence()
 
     def init_ui(self):
         main_widget = QWidget()
@@ -717,13 +746,16 @@ class TrampolineAnnotator(QMainWindow):
 
     def load_sequence_from_dirs(self, camera_dirs):
         """Scans separate camera directories and loads or initializes annotation_{video_id}.json in parent's GT/ directory."""
+        # Convert all paths to absolute paths for consistency
+        camera_dirs = {k: os.path.abspath(v) for k, v in camera_dirs.items()}
+        self.camera_dirs = camera_dirs
+
         self.undo_stack.clear()
         self.redo_stack.clear()
         self.update_history_actions_state()
 
-        if not self.sequence_dir:
-            first_dir = next(iter(camera_dirs.values()))
-            self.sequence_dir = os.path.dirname(first_dir)
+        first_dir = next(iter(camera_dirs.values()))
+        self.sequence_dir = os.path.dirname(first_dir)
 
         self.path_lbl.setText(self.sequence_dir)
 
@@ -875,16 +907,35 @@ class TrampolineAnnotator(QMainWindow):
         else:
             self.initialize_fresh_coco()
 
+        # Check if loaded sequence matches the last saved session
+        saved_settings = self.load_local_settings() or {}
+        saved_dirs = saved_settings.get("camera_dirs")
+        restore_frame_idx = 0
+        if (
+            isinstance(saved_dirs, dict)
+            and len(saved_dirs) == len(CAMERA_KEYS)
+            and all(os.path.abspath(saved_dirs.get(k, "")) == os.path.abspath(camera_dirs.get(k, "")) for k in CAMERA_KEYS)
+        ):
+            saved_frame_idx = saved_settings.get("current_frame_idx", 0)
+            if 0 <= saved_frame_idx < len(self.sorted_frames):
+                restore_frame_idx = saved_frame_idx
+
         if self.sorted_frames:
             self.slider_frame.setEnabled(True)
             self.slider_frame.setRange(0, len(self.sorted_frames) - 1)
-            self.slider_frame.setValue(0)
+            self.slider_frame.blockSignals(True)
+            self.slider_frame.setValue(restore_frame_idx)
+            self.slider_frame.blockSignals(False)
+
             self.spin_frame.setEnabled(True)
             self.spin_frame.setRange(1, len(self.sorted_frames))
-            self.spin_frame.setValue(1)
+            self.spin_frame.blockSignals(True)
+            self.spin_frame.setValue(restore_frame_idx + 1)
+            self.spin_frame.blockSignals(False)
+
             self.lbl_total_frames.setText(f"/ {len(self.sorted_frames)}")
 
-        self.current_frame_idx = 0
+        self.current_frame_idx = restore_frame_idx
         self.show_current_frame()
         self.global_3d_bounds = self.calculate_global_3d_bounds()
 
@@ -998,6 +1049,9 @@ class TrampolineAnnotator(QMainWindow):
 
         # Update 3D skeleton visualization
         self.update_3d_view()
+
+        # Automatically persist settings (e.g. current_frame_idx)
+        self.save_local_settings()
 
     def get_maximized_camera_id(self):
         """Returns the ID of the maximized view, or None."""
@@ -1450,6 +1504,7 @@ class TrampolineAnnotator(QMainWindow):
             for item in cam.scene.items():
                 if isinstance(item, ReprojectedPointItem):
                     item.set_radius(value)
+        self.save_local_settings()
 
     def on_slider_frame_changed(self, value):
         """Called when the user drags the frame slider."""
@@ -1620,3 +1675,36 @@ class TrampolineAnnotator(QMainWindow):
             "z_min": float(np.min(all_zs)),
             "z_max": float(np.max(all_zs)),
         }
+
+    def save_local_settings(self):
+        """Saves current settings and active frame to configs/local_settings.json."""
+        try:
+            settings = {
+                "keypoint_radius": self.keypoint_radius,
+                "auto_rotate_enabled": self.auto_rotate_enabled,
+                "show_3d_reprojection": self.show_3d_reprojection,
+                "realtime_triangulation_enabled": self.realtime_triangulation_enabled,
+                "camera_dirs": getattr(self, "camera_dirs", None),
+                "current_frame_idx": self.current_frame_idx,
+            }
+            os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
+    def load_local_settings(self):
+        """Loads settings from configs/local_settings.json if it exists."""
+        if not os.path.exists(SETTINGS_FILE):
+            return None
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            return None
+
+    def closeEvent(self, event):
+        """Called when the window is closed. Save settings and state."""
+        self.save_local_settings()
+        event.accept()

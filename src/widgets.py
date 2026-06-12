@@ -175,6 +175,10 @@ class CameraWidget(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.update_button_positions()
+
+    def update_button_positions(self):
+        """Update positions of overlay buttons based on which ones are currently visible."""
         w_toggle = 0
         w_delete = 0
         w_swap = 0
@@ -572,6 +576,9 @@ class CameraWidget(QGraphicsView):
             self.verticalScrollBar().setValue(v_val)
         else:
             self.refresh_view()
+
+        # Update button positions dynamically
+        self.update_button_positions()
 
     def get_body_up_vector(self, keypoints):
         """Finds 2D vector pointing from hips center to shoulders center."""
