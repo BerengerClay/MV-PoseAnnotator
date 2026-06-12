@@ -232,9 +232,27 @@ class TrampolineAnnotator(QMainWindow):
         self.mode_lbl = QLabel("Grid Mode (Double click view to zoom)")
         self.mode_lbl.setStyleSheet("color: #38bdf8; font-weight: bold;")
 
-        # AI commands and Triangulation
-        ai_tri_layout = QHBoxLayout()
+        # View navigation buttons (only shown in maximized view mode)
+        self.view_nav_layout = QHBoxLayout()
+        self.view_nav_layout.setContentsMargins(0, 0, 0, 0)
 
+        self.btn_prev_view = QPushButton("Prev View")
+        self.btn_prev_view.setIcon(get_lucide_icon("arrow-left", color="#ffffff"))
+        self.btn_prev_view.clicked.connect(self.show_prev_camera_view)
+        self.btn_prev_view.setStyleSheet("background-color: #1e293b; border: 1px solid #334155; padding: 6px 12px;")
+
+        self.btn_next_view = QPushButton("Next View")
+        self.btn_next_view.setIcon(get_lucide_icon("arrow-right", color="#ffffff"))
+        self.btn_next_view.clicked.connect(self.show_next_camera_view)
+        self.btn_next_view.setStyleSheet("background-color: #1e293b; border: 1px solid #334155; padding: 6px 12px;")
+
+        self.view_nav_layout.addWidget(self.btn_prev_view)
+        self.view_nav_layout.addWidget(self.btn_next_view)
+
+        self.btn_prev_view.hide()
+        self.btn_next_view.hide()
+
+        # AI commands and Triangulation
         self.btn_triangulate = QPushButton("Triangulate")
         self.btn_triangulate.setIcon(get_lucide_icon("box", color="#ffffff"))
         self.btn_triangulate.clicked.connect(self.trigger_triangulation)
@@ -242,8 +260,6 @@ class TrampolineAnnotator(QMainWindow):
         self.btn_triangulate.setToolTip(
             "Triangulate points labeled in 2+ cams and reproject on remaining views"
         )
-
-        ai_tri_layout.addWidget(self.btn_triangulate)
 
         self.btn_preprocess_seq = QPushButton("Preprocess Sequence")
         self.btn_preprocess_seq.setIcon(get_lucide_icon("sparkles", color="#ffffff"))
@@ -347,11 +363,12 @@ class TrampolineAnnotator(QMainWindow):
         sidebar.addWidget(btn_open)
         sidebar.addWidget(self.btn_settings)
         sidebar.addWidget(self.mode_lbl)
+        sidebar.addLayout(self.view_nav_layout)
         sidebar.addSpacing(15)
         sidebar.addWidget(self.btn_preprocess_seq)
         sidebar.addWidget(self.btn_zoom_all)
+        sidebar.addWidget(self.btn_triangulate)
         sidebar.addSpacing(15)
-        sidebar.addLayout(ai_tri_layout)
 
         sidebar.addStretch()  # Push everything below to the bottom!
 
@@ -1061,8 +1078,14 @@ class TrampolineAnnotator(QMainWindow):
         maximized_id = self.get_maximized_camera_id()
         if maximized_id is not None:
             self.mode_lbl.setText(f"Maximized: {CAMERA_KEYS[maximized_id]}")
+            self.btn_prev_view.show()
+            self.btn_next_view.show()
+            self.btn_prev_view.setEnabled(maximized_id > 0)
+            self.btn_next_view.setEnabled(maximized_id < len(self.camera_widgets) - 1)
         else:
             self.mode_lbl.setText("Grid Mode (Double click view to zoom)")
+            self.btn_prev_view.hide()
+            self.btn_next_view.hide()
 
         # Enable zoom all if a sequence is loaded and has frames
         self.btn_zoom_all.setEnabled(
@@ -1097,6 +1120,41 @@ class TrampolineAnnotator(QMainWindow):
         else:
             self.reset_camera_grid()
 
+        self.update_active_widgets_state()
+
+    def show_prev_camera_view(self):
+        """Switches to the previous camera view when maximized."""
+        maximized_id = self.get_maximized_camera_id()
+        if maximized_id is not None and maximized_id > 0:
+            self.switch_maximized_camera(maximized_id - 1)
+
+    def show_next_camera_view(self):
+        """Switches to the next camera view when maximized."""
+        maximized_id = self.get_maximized_camera_id()
+        if maximized_id is not None and maximized_id < len(self.camera_widgets) - 1:
+            self.switch_maximized_camera(maximized_id + 1)
+
+    def switch_maximized_camera(self, new_id):
+        """Transitions the maximized state from the current view to a new view."""
+        maximized_id = self.get_maximized_camera_id()
+        if maximized_id is not None:
+            old_cam = self.camera_widgets[maximized_id]
+            self.grid_layout.removeWidget(old_cam)
+            self.grid_layout.addWidget(old_cam, maximized_id // 4, maximized_id % 4, 1, 1)
+            old_cam.is_maximized = False
+
+        new_cam = self.camera_widgets[new_id]
+        for i, c in enumerate(self.camera_widgets):
+            if i != new_id:
+                c.hide()
+            else:
+                c.show()
+
+        self.grid_layout.removeWidget(new_cam)
+        self.grid_layout.addWidget(new_cam, 0, 0, 2, 4)
+        new_cam.is_maximized = True
+
+        QTimer.singleShot(0, new_cam.zoom_to_bbox)
         self.update_active_widgets_state()
 
     def reset_camera_grid(self):
