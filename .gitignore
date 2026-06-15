@@ -51,3 +51,5 @@ Thumbs.db
 
 # User local settings / session
 configs/local_settings.json
+
+annotator.log

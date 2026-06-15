@@ -4,9 +4,19 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, QTimer
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-
 from src.constants import KEYPOINT_COLORS, COCO_SKELETON
 from src.icons import get_lucide_icon, configure_button
+
+
+def log_debug(msg):
+    try:
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open("annotator.log", "a", encoding="utf-8") as f:
+            f.write(f"[{now}] [3D_Visualizer] {msg}\n")
+            f.flush()
+    except Exception:
+        pass
 
 class Visualizer3DWidget(QWidget):
     """Matplotlib-based 3D skeleton visualizer widget that can be used inline or inside a window."""
@@ -62,6 +72,7 @@ class Visualizer3DWidget(QWidget):
 
     def update_plot(self, pts_3d):
         """Updates the 3D scatter and line plots with new 3D keypoint coordinates."""
+        log_debug(f"Visualizer3DWidget.update_plot started (small_mode={self.small_mode})")
         self.ax.cla()
         self.ax.set_facecolor('#090d16')
         self.ax.xaxis.pane.fill = False
@@ -156,7 +167,9 @@ class Visualizer3DWidget(QWidget):
                 self.ax.set_ylim(mid_y - max_range * 0.5, mid_y + max_range * 0.5)
                 self.ax.set_zlim(mid_z - max_range * 0.5, mid_z + max_range * 0.5)
             
+        log_debug("Visualizer3DWidget.update_plot calling canvas.draw()")
         self.canvas.draw()
+        log_debug("Visualizer3DWidget.update_plot canvas.draw() done")
 
 
 class Visualizer3DWindow(QMainWindow):
@@ -287,6 +300,7 @@ class Visualizer3DWindow(QMainWindow):
         self.update_visualization()
 
     def sync_to_annotator_frame(self):
+        log_debug("Visualizer3DWindow.sync_to_annotator_frame started")
         if self.play_timer.isActive():
             self.play_timer.stop()
             configure_button(self.btn_play_pause, text="Play", icon_name="play", icon_color="#ffffff", bg_color="#059669")
@@ -300,6 +314,7 @@ class Visualizer3DWindow(QMainWindow):
             total = len(self.main_win.sorted_frames)
             self.lbl_frame_info.setText(f"Frame: {self.playback_frame_idx + 1} / {total}")
         self.update_visualization()
+        log_debug("Visualizer3DWindow.sync_to_annotator_frame completed")
 
     def toggle_view_mode(self):
         if self.widget_3d.view_mode == "athlete":
@@ -311,9 +326,12 @@ class Visualizer3DWindow(QMainWindow):
         self.update_visualization()
 
     def update_visualization(self):
+        log_debug("Visualizer3DWindow.update_visualization started")
         if self.main_win:
             pts_3d = self.main_win.calculate_3d_keypoints(self.playback_frame_idx)
+            log_debug("Visualizer3DWindow.update_visualization calculate_3d_keypoints done")
             self.widget_3d.update_plot(pts_3d)
+            log_debug("Visualizer3DWindow.update_visualization update_plot done")
 
     def closeEvent(self, event):
         self.play_timer.stop()

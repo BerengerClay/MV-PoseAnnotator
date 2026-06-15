@@ -84,7 +84,7 @@ class SequencePreprocessWorker(QThread):
                             img_id = img_entry["id"]
                             ann = self.img_ann_map.get(img_id)
                             # Only process if bbox is not drawn yet
-                            if ann and (not ann.get("bbox") or sum(ann["bbox"]) == 0):
+                            if ann and (not ann.get("bbox") or len(ann["bbox"]) != 4 or ann["bbox"][2] <= 0 or ann["bbox"][3] <= 0):
                                 images_to_process.append((cam_key, path, img_id, ann))
                 
                 if not images_to_process:

@@ -26,6 +26,17 @@ from src.items import (
 from src.icons import get_lucide_icon, configure_button
 
 
+def log_debug(msg):
+    try:
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open("annotator.log", "a", encoding="utf-8") as f:
+            f.write(f"[{now}] [Widgets] {msg}\n")
+            f.flush()
+    except Exception:
+        pass
+
+
 class CameraWidget(QGraphicsView):
     """Interactive graphics canvas for rendering a single camera view."""
 
@@ -57,6 +68,7 @@ class CameraWidget(QGraphicsView):
         self.current_rotation_angle = 0.0
         self.current_annotation = None
         self.current_img_path = None
+        self.user_has_zoomed_or_panned = False
         self.delete_key_pressed = False
 
         # Canvas settings
@@ -214,10 +226,12 @@ class CameraWidget(QGraphicsView):
         """Interactive zoom centered on mouse cursor."""
         zoom_factor = 1.15 if event.angleDelta().y() > 0 else 0.85
         self.scale(zoom_factor, zoom_factor)
+        self.user_has_zoomed_or_panned = True
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.refresh_view()
+        if not getattr(self, "user_has_zoomed_or_panned", False):
+            self.refresh_view()
         self.update_button_positions()
 
     def update_button_positions(self):
@@ -421,6 +435,7 @@ class CameraWidget(QGraphicsView):
             self.verticalScrollBar().setValue(
                 self.verticalScrollBar().value() - delta.y()
             )
+            self.user_has_zoomed_or_panned = True
             event.accept()
         else:
             super().mouseMoveEvent(event)
@@ -507,6 +522,7 @@ class CameraWidget(QGraphicsView):
 
     def load_frame(self, img_path, annotation, preserve_view=False):
         """Loads and draws image, bbox, keypoints, and skeleton."""
+        log_debug(f"CameraWidget.load_frame started for camera {self.camera_name}, img_path={img_path}")
         # Save zoom/pan state if we are reloading the same image frame and preserve_view is requested
         is_same_image = (
             hasattr(self, "current_img_path")
@@ -525,6 +541,7 @@ class CameraWidget(QGraphicsView):
         selected_point_ids = {kp.point_id for kp in self.keypoint_items.values() if kp.isSelected()}
         bbox_selected = self.bbox_item.isSelected() if (hasattr(self, 'bbox_item') and self.bbox_item is not None) else False
 
+        log_debug(f"CameraWidget.load_frame clearing scene for camera {self.camera_name}")
         self.scene.clear()
         self.keypoint_items.clear()
         self.skeleton_items.clear()
@@ -534,6 +551,7 @@ class CameraWidget(QGraphicsView):
         self.current_annotation = annotation
 
         if not os.path.exists(img_path):
+            log_debug(f"CameraWidget.load_frame image not found for camera {self.camera_name}")
             txt_item = self.scene.addText(
                 f"Image not found:\n{os.path.basename(img_path)}"
             )
@@ -550,7 +568,7 @@ class CameraWidget(QGraphicsView):
         bbox = annotation.get("bbox", [0, 0, 0, 0])
         keypoints = annotation.get("keypoints", [])
 
-        has_bbox = bbox and sum(bbox) > 0
+        has_bbox = bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0
         has_keypoints = keypoints and any(
             keypoints[idx * 3 + 2] > 0 for idx in range(17)
         )
@@ -646,6 +664,7 @@ class CameraWidget(QGraphicsView):
 
         # Draw reprojected 3D keypoints if enabled
         if self.main_win and getattr(self.main_win, "show_3d_reprojection", False):
+            log_debug(f"CameraWidget.load_frame drawing 3D reprojections for camera {self.camera_name}")
             pts_3d = self.main_win.calculate_3d_keypoints()
             if pts_3d is not None and not np.all(np.isnan(pts_3d)):
                 key = CAMERA_KEYS[self.camera_id]
@@ -673,6 +692,7 @@ class CameraWidget(QGraphicsView):
                     X_3d = pts_3d[kp_idx]
                     if not np.isnan(X_3d[0]):
                         if use_distorted:
+                            log_debug(f"CameraWidget.load_frame projecting distorted point {kp_idx} on camera {self.camera_name}")
                             img_pts, _ = cv2.projectPoints(
                                 X_3d.reshape(1, 3), rvec, tvec, K, D
                             )
@@ -680,6 +700,7 @@ class CameraWidget(QGraphicsView):
                             valid = True
                         else:
                             if P is not None:
+                                log_debug(f"CameraWidget.load_frame projecting undistorted point {kp_idx} on camera {self.camera_name}")
                                 X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
                                 x_proj = P @ X_homog
                                 if x_proj[2] != 0:
@@ -715,6 +736,7 @@ class CameraWidget(QGraphicsView):
             self.horizontalScrollBar().setValue(h_val)
             self.verticalScrollBar().setValue(v_val)
         else:
+            self.user_has_zoomed_or_panned = False
             self.refresh_view()
 
         # Update button positions dynamically
@@ -783,7 +805,7 @@ class CameraWidget(QGraphicsView):
         self.rotate(angle)
 
         # Fit in view with bounding box
-        if bbox and sum(bbox) > 0:
+        if bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0:
             x, y, w, h = bbox
             # Add padding
             padding_x = w * 0.2
@@ -820,7 +842,7 @@ class CameraWidget(QGraphicsView):
             if self.current_annotation
             else [0, 0, 0, 0]
         )
-        if self.view_mode == "bbox" and bbox and sum(bbox) > 0:
+        if self.view_mode == "bbox" and bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0:
             self.apply_bbox_view()
         else:
             self.apply_global_view()
@@ -833,12 +855,14 @@ class CameraWidget(QGraphicsView):
         else:
             self.view_mode = "bbox"
             configure_button(self.toggle_view_btn, icon_name="minimize-2")
+        self.user_has_zoomed_or_panned = False
         self.refresh_view()
 
     def zoom_to_bbox(self):
         """Forces bbox view mode and applies it."""
         self.view_mode = "bbox"
         configure_button(self.toggle_view_btn, icon_name="minimize-2")
+        self.user_has_zoomed_or_panned = False
         self.apply_bbox_view()
 
     def update_keypoint_pos(self, point_id, x, y, save_and_sync=False):
@@ -915,7 +939,7 @@ class CameraWidget(QGraphicsView):
 
         ann = self.current_annotation
         bbox = ann.get("bbox", [0, 0, 0, 0])
-        has_bbox = bbox and sum(bbox) > 0
+        has_bbox = bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0
 
         # Create context menu
         menu = QMenu(self)

@@ -42,7 +42,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.parent_win = parent
         self.setWindowTitle("Settings")
-        self.resize(420, 520)
+        self.resize(420, 550)
 
         if parent:
             self.original_kp_radius = parent.keypoint_radius
@@ -51,11 +51,15 @@ class SettingsDialog(QDialog):
             self.original_realtime_tri = getattr(
                 parent, "realtime_triangulation_enabled", False
             )
+            self.original_delete_bbox = getattr(
+                parent, "delete_bbox_on_clear", False
+            )
         else:
             self.original_kp_radius = 3
             self.original_rotate = True
             self.original_reproject = False
             self.original_realtime_tri = False
+            self.original_delete_bbox = False
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -86,6 +90,17 @@ class SettingsDialog(QDialog):
         if parent:
             self.chk_realtime_tri.toggled.connect(self.on_realtime_tri_toggled)
         layout.addWidget(self.chk_realtime_tri)
+
+        # Delete bounding box on clear annotations checkbox
+        self.chk_delete_bbox = QCheckBox(
+            "Delete bounding boxes when clearing annotations"
+        )
+        self.chk_delete_bbox.setChecked(
+            parent.delete_bbox_on_clear if parent else False
+        )
+        if parent:
+            self.chk_delete_bbox.toggled.connect(self.on_delete_bbox_toggled)
+        layout.addWidget(self.chk_delete_bbox)
 
         # Keypoint size slider layout
         kp_size_layout = QHBoxLayout()
@@ -219,6 +234,10 @@ class SettingsDialog(QDialog):
         if self.parent_win:
             self.parent_win.realtime_triangulation_enabled = checked
 
+    def on_delete_bbox_toggled(self, checked):
+        if self.parent_win:
+            self.parent_win.delete_bbox_on_clear = checked
+
     def accept(self):
         if self.parent_win:
             self.parent_win.save_local_settings()
@@ -230,6 +249,7 @@ class SettingsDialog(QDialog):
             self.parent_win.auto_rotate_enabled = self.original_rotate
             self.parent_win.show_3d_reprojection = self.original_reproject
             self.parent_win.realtime_triangulation_enabled = self.original_realtime_tri
+            self.parent_win.delete_bbox_on_clear = self.original_delete_bbox
             # Re-apply orientations
             for cam in self.parent_win.camera_widgets:
                 if cam.view_mode == "bbox":

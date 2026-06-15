@@ -40,8 +40,20 @@ from src.icons import get_lucide_icon
 SETTINGS_FILE = os.path.join("configs", "local_settings.json")
 
 
+def log_debug(msg):
+    try:
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open("annotator.log", "a", encoding="utf-8") as f:
+            f.write(f"[{now}] {msg}\n")
+            f.flush()
+    except Exception:
+        pass
+
+
 class TrampolineAnnotator(QMainWindow):
     def __init__(self, paths=None):
+        log_debug("TrampolineAnnotator.__init__ started")
         super().__init__()
         self.setWindowTitle("Multi-View Trampoline Jumper Annotator")
         self.setGeometry(100, 100, 1600, 950)
@@ -79,6 +91,7 @@ class TrampolineAnnotator(QMainWindow):
         self.global_3d_bounds = None
         self.show_3d_reprojection = saved_settings.get("show_3d_reprojection", False)
         self.realtime_triangulation_enabled = saved_settings.get("realtime_triangulation_enabled", False)
+        self.delete_bbox_on_clear = saved_settings.get("delete_bbox_on_clear", False)
 
         # History stacks for Undo/Redo
         self.undo_stack = []
@@ -117,6 +130,7 @@ class TrampolineAnnotator(QMainWindow):
                 self.load_sequence_from_dirs(self.camera_dirs)
             else:
                 self.prompt_select_sequence()
+        log_debug("TrampolineAnnotator.__init__ completed successfully")
 
     def init_ui(self):
         main_widget = QWidget()
@@ -258,12 +272,64 @@ class TrampolineAnnotator(QMainWindow):
         self.btn_preprocess_seq.setIcon(get_lucide_icon("sparkles", color="#ffffff"))
         self.btn_preprocess_seq.clicked.connect(self.run_sequence_preprocessing)
         self.btn_preprocess_seq.setEnabled(False)
-        self.btn_preprocess_seq.setStyleSheet(
-            "background-color: #7c3aed; color: white; font-weight: bold;"
-        )
+        self.btn_preprocess_seq.setStyleSheet("""
+            QPushButton {
+                background-color: #7c3aed;
+                color: white;
+                font-weight: bold;
+                border: 1px solid #7c3aed;
+            }
+            QPushButton:hover {
+                background-color: #8b5cf6;
+                border-color: #8b5cf6;
+            }
+            QPushButton:pressed {
+                background-color: #6d28d9;
+                border-color: #6d28d9;
+            }
+            QPushButton:disabled {
+                background-color: #1e1b4b;
+                color: #64748b;
+                border-color: #1e1b4b;
+            }
+        """)
         self.btn_preprocess_seq.setToolTip(
             "Run YOLO + ViTPose on all sequence images to generate preprocessing"
         )
+
+        self.btn_clear_frame_ann = QPushButton("Clear Frame")
+        self.btn_clear_frame_ann.setIcon(get_lucide_icon("trash-2", color="#ffffff"))
+        self.btn_clear_frame_ann.clicked.connect(self.clear_current_frame_annotations)
+        self.btn_clear_frame_ann.setEnabled(False)
+        self.btn_clear_frame_ann.setStyleSheet("""
+            QPushButton {
+                background-color: #dc2626;
+                color: white;
+                font-weight: bold;
+                border: 1px solid #dc2626;
+            }
+            QPushButton:hover {
+                background-color: #ef4444;
+                border-color: #ef4444;
+            }
+            QPushButton:pressed {
+                background-color: #b91c1c;
+                border-color: #b91c1c;
+            }
+            QPushButton:disabled {
+                background-color: #451a03;
+                color: #64748b;
+                border-color: #451a03;
+            }
+        """)
+        self.btn_clear_frame_ann.setToolTip(
+            "Clear annotations for the current frame across all cameras"
+        )
+
+        self.ai_buttons_layout = QHBoxLayout()
+        self.ai_buttons_layout.setSpacing(10)
+        self.ai_buttons_layout.addWidget(self.btn_preprocess_seq)
+        self.ai_buttons_layout.addWidget(self.btn_clear_frame_ann)
 
         self.btn_zoom_all = QPushButton("Zoom 8 Views to BBox")
         self.btn_zoom_all.setIcon(get_lucide_icon("maximize-2", color="#ffffff"))
@@ -358,7 +424,7 @@ class TrampolineAnnotator(QMainWindow):
         sidebar.addWidget(self.mode_lbl)
         sidebar.addLayout(self.view_nav_layout)
         sidebar.addSpacing(15)
-        sidebar.addWidget(self.btn_preprocess_seq)
+        sidebar.addLayout(self.ai_buttons_layout)
         sidebar.addWidget(self.btn_zoom_all)
         sidebar.addSpacing(15)
 
@@ -747,6 +813,7 @@ class TrampolineAnnotator(QMainWindow):
 
     def load_sequence_from_dirs(self, camera_dirs):
         """Scans separate camera directories and loads or initializes annotation_{video_id}.json in parent's GT/ directory."""
+        log_debug(f"load_sequence_from_dirs started, camera_dirs={camera_dirs}")
         # Convert all paths to absolute paths for consistency
         camera_dirs = {k: os.path.abspath(v) for k, v in camera_dirs.items()}
         self.camera_dirs = camera_dirs
@@ -941,6 +1008,7 @@ class TrampolineAnnotator(QMainWindow):
         self.global_3d_bounds = self.calculate_global_3d_bounds()
 
         self.btn_preprocess_seq.setEnabled(True)
+        self.btn_clear_frame_ann.setEnabled(True)
 
         # Defer zoom to bounding boxes until layout finishes resizing at startup or sequence load
         QTimer.singleShot(0, self.zoom_all_bboxes)
@@ -962,6 +1030,7 @@ class TrampolineAnnotator(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.run_sequence_preprocessing()
+        log_debug("load_sequence_from_dirs completed successfully")
 
     def initialize_fresh_coco(self):
         """Initializes empty COCO dict structure mapping scanned local image files."""
@@ -1006,30 +1075,38 @@ class TrampolineAnnotator(QMainWindow):
 
     def show_current_frame(self, preserve_view=False):
         """Updates QGraphicsScene components on the 8 grid views."""
+        log_debug(f"show_current_frame started, current_frame_idx={self.current_frame_idx}")
         if self.current_frame_idx < 0 or self.current_frame_idx >= len(
             self.sorted_frames
         ):
+            log_debug("show_current_frame early return due to bounds")
             return
 
         frame_idx = self.sorted_frames[self.current_frame_idx]
+        log_debug(f"show_current_frame frame_idx={frame_idx}")
         self.frame_lbl.setText(
             f"Frame: {self.current_frame_idx + 1} / {len(self.sorted_frames)}"
         )
         self.status_bar.showMessage(f"Displaying frame index: {frame_idx}")
 
         maximized_id = self.get_maximized_camera_id()
+        log_debug(f"show_current_frame maximized_id={maximized_id}")
         for i, key in enumerate(CAMERA_KEYS):
             cam_widget = self.camera_widgets[i]
+            log_debug(f"show_current_frame processing camera={key} (i={i})")
             if key in self.frame_data[frame_idx]:
                 img_path = self.frame_data[frame_idx][key]
                 img_entry = self.img_file_map[img_path]
                 ann = self.img_ann_map[img_entry["id"]]
+                log_debug(f"show_current_frame calling load_frame for key={key}, img={img_path}")
                 cam_widget.load_frame(img_path, ann, preserve_view=preserve_view)
+                log_debug(f"show_current_frame load_frame done for key={key}")
                 if maximized_id is None or i == maximized_id:
                     cam_widget.show()
                 else:
                     cam_widget.hide()
             else:
+                log_debug(f"show_current_frame key={key} missing from frame_data")
                 cam_widget.scene.clear()
                 txt_item = cam_widget.scene.addText(f"Missing frame data\nfor {key}")
                 txt_item.setDefaultTextColor(QColor(148, 163, 184))
@@ -1039,23 +1116,29 @@ class TrampolineAnnotator(QMainWindow):
                     cam_widget.hide()
 
         # Update sidebar state
+        log_debug("show_current_frame updating sidebar state")
         self.update_active_widgets_state()
 
         # Synchronize frame slider
+        log_debug("show_current_frame syncing frame slider")
         self.slider_frame.blockSignals(True)
         self.slider_frame.setValue(self.current_frame_idx)
         self.slider_frame.blockSignals(False)
 
         # Synchronize frame spin box
+        log_debug("show_current_frame syncing frame spin box")
         self.spin_frame.blockSignals(True)
         self.spin_frame.setValue(self.current_frame_idx + 1)
         self.spin_frame.blockSignals(False)
 
         # Update 3D skeleton visualization
+        log_debug("show_current_frame updating 3D visualizer")
         self.update_3d_view()
 
         # Automatically persist settings (e.g. current_frame_idx)
+        log_debug("show_current_frame saving local settings")
         self.save_local_settings()
+        log_debug("show_current_frame completed successfully")
 
     def get_maximized_camera_id(self):
         """Returns the ID of the maximized view, or None."""
@@ -1244,7 +1327,7 @@ class TrampolineAnnotator(QMainWindow):
         ann = self.img_ann_map[img_entry["id"]]
         bbox = ann.get("bbox", [0, 0, 0, 0])
 
-        if not bbox or sum(bbox) == 0:
+        if not bbox or len(bbox) != 4 or bbox[2] <= 0 or bbox[3] <= 0:
             QMessageBox.warning(
                 self,
                 "No Bounding Box",
@@ -1383,40 +1466,41 @@ class TrampolineAnnotator(QMainWindow):
                     A.append(u * P[2, :] - P[0, :])
                     A.append(v * P[2, :] - P[1, :])
                 
+                valid = False
                 A = np.array(A)
                 _, _, Vt = np.linalg.svd(A)
                 X = Vt[-1, :]
-                if X[3] != 0:
+                if abs(X[3]) > 1e-5:
                     X = X / X[3]
                     X_3d = X[:3]
-                    
-                    # Project back onto target camera cam_id
-                    target_model_key = target_key.split("_")[1] if "_" in target_key else target_key
-                    if self.calib_data and target_model_key in self.calib_data:
-                        K = np.array(self.calib_data[target_model_key]["matrix"], dtype=np.float32)
-                        distortions = np.array(self.calib_data[target_model_key]["distortions"], dtype=np.float32)
-                        rvec = np.array(self.calib_data[target_model_key]["rotation"], dtype=np.float32)
-                        tvec = np.array(self.calib_data[target_model_key]["translation"], dtype=np.float32)
-                        
-                        img_pts, _ = cv2.projectPoints(X_3d.reshape(1, 3), rvec, tvec, K, distortions)
-                        u_proj, v_proj = img_pts[0, 0]
-                        valid = True
-                    else:
-                        P = np.array(matrices_list[cam_id])
-                        X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
-                        x_proj = P @ X_homog
-                        if x_proj[2] != 0:
-                            u_proj = x_proj[0] / x_proj[2]
-                            v_proj = x_proj[1] / x_proj[2]
+                    if np.all(np.abs(X_3d) < 50.0):
+                        # Project back onto target camera cam_id
+                        target_model_key = target_key.split("_")[1] if "_" in target_key else target_key
+                        if self.calib_data and target_model_key in self.calib_data:
+                            K = np.array(self.calib_data[target_model_key]["matrix"], dtype=np.float32)
+                            distortions = np.array(self.calib_data[target_model_key]["distortions"], dtype=np.float32)
+                            rvec = np.array(self.calib_data[target_model_key]["rotation"], dtype=np.float32)
+                            tvec = np.array(self.calib_data[target_model_key]["translation"], dtype=np.float32)
+                            
+                            img_pts, _ = cv2.projectPoints(X_3d.reshape(1, 3), rvec, tvec, K, distortions)
+                            u_proj, v_proj = img_pts[0, 0]
                             valid = True
                         else:
-                            valid = False
+                            P = np.array(matrices_list[cam_id])
+                            X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
+                            x_proj = P @ X_homog
+                            if x_proj[2] != 0:
+                                u_proj = x_proj[0] / x_proj[2]
+                                v_proj = x_proj[1] / x_proj[2]
+                                valid = True
+                            else:
+                                valid = False
                             
-                    if valid and 0.0 <= u_proj <= 1920.0 and 0.0 <= v_proj <= 1080.0:
-                        flat_kps[kp_idx * 3] = float(u_proj)
-                        flat_kps[kp_idx * 3 + 1] = float(v_proj)
-                        flat_kps[kp_idx * 3 + 2] = 2.0  # Labeled/confirmed via triangulation
-                        updated_count += 1
+                if valid and 0.0 <= u_proj <= 1920.0 and 0.0 <= v_proj <= 1080.0:
+                    flat_kps[kp_idx * 3] = float(u_proj)
+                    flat_kps[kp_idx * 3 + 1] = float(v_proj)
+                    flat_kps[kp_idx * 3 + 2] = 2.0  # Labeled/confirmed via triangulation
+                    updated_count += 1
             
             if updated_count > 0:
                 ann["keypoints"] = flat_kps
@@ -1502,6 +1586,7 @@ class TrampolineAnnotator(QMainWindow):
 
         # Disable controls
         self.btn_preprocess_seq.setEnabled(False)
+        self.btn_clear_frame_ann.setEnabled(False)
         self.set_triangulation_buttons_enabled(False)
         self.btn_prev.setEnabled(False)
         self.btn_next.setEnabled(False)
@@ -1525,6 +1610,7 @@ class TrampolineAnnotator(QMainWindow):
 
         # Re-enable controls
         self.btn_preprocess_seq.setEnabled(True)
+        self.btn_clear_frame_ann.setEnabled(True)
         self.set_triangulation_buttons_enabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
@@ -1555,6 +1641,7 @@ class TrampolineAnnotator(QMainWindow):
             self.progress_dialog.close()
 
         self.btn_preprocess_seq.setEnabled(True)
+        self.btn_clear_frame_ann.setEnabled(True)
         self.set_triangulation_buttons_enabled(True)
         self.btn_prev.setEnabled(True)
         self.btn_next.setEnabled(True)
@@ -1653,17 +1740,25 @@ class TrampolineAnnotator(QMainWindow):
 
     def update_3d_view(self):
         """Calculates 3D points and updates the inline plot and the 3D window if visible."""
+        log_debug("update_3d_view started")
         pts_3d = self.calculate_3d_keypoints()
+        log_debug("update_3d_view calculate_3d_keypoints done")
         if hasattr(self, "visualizer_3d_inline") and self.visualizer_3d_inline:
+            log_debug("update_3d_view calling update_plot on inline visualizer")
             self.visualizer_3d_inline.update_plot(pts_3d)
+            log_debug("update_3d_view update_plot on inline visualizer done")
         if self.visualizer_3d_window and self.visualizer_3d_window.isVisible():
+            log_debug("update_3d_view 3D window is visible")
             if (
                 self.visualizer_3d_window.playback_frame_idx != self.current_frame_idx
                 or self.visualizer_3d_window.play_timer.isActive()
             ):
+                log_debug("update_3d_view syncing 3D window to annotator frame")
                 self.visualizer_3d_window.sync_to_annotator_frame()
             else:
+                log_debug("update_3d_view updating 3D window visualization")
                 self.visualizer_3d_window.update_visualization()
+        log_debug("update_3d_view completed successfully")
 
     def calculate_3d_keypoints(self, frame_idx_in_list=None):
         """Calculates 3D coordinates for all 17 keypoints of the current or specified frame."""
@@ -1740,9 +1835,11 @@ class TrampolineAnnotator(QMainWindow):
             A = np.array(A)
             _, _, Vt = np.linalg.svd(A)
             X = Vt[-1, :]
-            if X[3] != 0:
+            if abs(X[3]) > 1e-5:
                 X = X / X[3]
-                pts_3d[kp_idx] = X[:3]
+                X_3d = X[:3]
+                if np.all(np.abs(X_3d) < 50.0):
+                    pts_3d[kp_idx] = X_3d
 
         return pts_3d
 
@@ -1787,6 +1884,7 @@ class TrampolineAnnotator(QMainWindow):
                 "auto_rotate_enabled": self.auto_rotate_enabled,
                 "show_3d_reprojection": self.show_3d_reprojection,
                 "realtime_triangulation_enabled": self.realtime_triangulation_enabled,
+                "delete_bbox_on_clear": self.delete_bbox_on_clear,
                 "camera_dirs": getattr(self, "camera_dirs", None),
                 "current_frame_idx": self.current_frame_idx,
             }
@@ -1806,6 +1904,41 @@ class TrampolineAnnotator(QMainWindow):
         except Exception as e:
             print(f"Error loading settings: {e}")
             return None
+
+    def clear_current_frame_annotations(self):
+        """Clears annotations (keypoints and optionally bboxes) for the current frame across all cameras."""
+        if self.current_frame_idx < 0 or not self.sorted_frames:
+            return
+
+        # Push to undo stack
+        self.push_undo()
+
+        frame_idx = self.sorted_frames[self.current_frame_idx]
+        log_debug(f"clear_current_frame_annotations started for frame_idx={frame_idx}")
+
+        cleared_count = 0
+        for cam_key in CAMERA_KEYS:
+            if cam_key in self.frame_data[frame_idx]:
+                img_path = self.frame_data[frame_idx][cam_key]
+                img_entry = self.img_file_map.get(img_path)
+                if img_entry:
+                    ann = self.img_ann_map.get(img_entry["id"])
+                    if ann:
+                        # Clear keypoints
+                        ann["keypoints"] = [0] * 51
+                        ann["num_keypoints"] = 0
+                        
+                        # Clear bbox if setting is active
+                        if getattr(self, "delete_bbox_on_clear", False):
+                            ann["bbox"] = [0, 0, 0, 0]
+                        cleared_count += 1
+
+        if cleared_count > 0:
+            self.save_annotations()
+            self.update_3d_view()
+            self.show_current_frame(preserve_view=True)
+            self.status_bar.showMessage(f"Cleared annotations on {cleared_count} camera views for the current frame.", 3000)
+            log_debug(f"clear_current_frame_annotations finished: cleared {cleared_count} views")
 
     def closeEvent(self, event):
         """Called when the window is closed. Save settings and state."""

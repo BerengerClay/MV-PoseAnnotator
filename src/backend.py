@@ -79,7 +79,18 @@ class ModelWrapper:
             best_idx = int(boxes.conf.argmax())
             xyxy = boxes.xyxy[best_idx].cpu().numpy()
             x1, y1, x2, y2 = xyxy
-            return [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+            
+            # Clamp to image boundaries
+            h_orig, w_orig = results[0].orig_shape
+            x1 = max(0.0, min(float(w_orig), float(x1)))
+            y1 = max(0.0, min(float(h_orig), float(y1)))
+            x2 = max(0.0, min(float(w_orig), float(x2)))
+            y2 = max(0.0, min(float(h_orig), float(y2)))
+            
+            w = x2 - x1
+            h = y2 - y1
+            if w > 0 and h > 0:
+                return [x1, y1, w, h]
             
         return None
     
@@ -223,7 +234,18 @@ class ModelWrapper:
                 best_idx = int(boxes.conf.argmax())
                 xyxy = boxes.xyxy[best_idx].cpu().numpy()
                 x1, y1, x2, y2 = xyxy
-                bbox = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+                
+                # Clamp to image boundaries
+                h_orig, w_orig = res.orig_shape
+                x1 = max(0.0, min(float(w_orig), float(x1)))
+                y1 = max(0.0, min(float(h_orig), float(y1)))
+                x2 = max(0.0, min(float(w_orig), float(x2)))
+                y2 = max(0.0, min(float(h_orig), float(y2)))
+                
+                w = x2 - x1
+                h = y2 - y1
+                if w > 0 and h > 0:
+                    bbox = [x1, y1, w, h]
             bboxes.append(bbox)
         return bboxes
 
@@ -236,7 +258,7 @@ class ModelWrapper:
         crop_infos = [] # list of (crop_w, crop_h, x1, y1) to map keypoints back
         
         for idx, (path, bbox) in enumerate(zip(image_paths, bboxes)):
-            if not bbox or sum(bbox) == 0:
+            if not bbox or len(bbox) != 4 or bbox[2] <= 0 or bbox[3] <= 0:
                 continue
                 
             img = cv2.imread(path)
