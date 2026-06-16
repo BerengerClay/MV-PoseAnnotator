@@ -66,6 +66,7 @@ class CameraWidget(QGraphicsView):
         # View mode: "bbox" (zoomed & rotated) or "global" (unrotated, fit all)
         self.view_mode = "bbox"
         self.current_rotation_angle = 0.0
+        self.manual_rotation_offset = 0.0
         self.current_annotation = None
         self.current_img_path = None
         self.user_has_zoomed_or_panned = False
@@ -214,6 +215,47 @@ class CameraWidget(QGraphicsView):
         self.triangulate_btn.clicked.connect(self.run_triangulation_on_this_view)
         self.triangulate_btn.setToolTip("Triangulate points from other views and place on this view")
         self.triangulate_btn.hide()
+
+        # Manual rotation buttons (bottom right)
+        self.rotate_cw_btn = QPushButton(self)
+        self.rotate_cw_btn.setIcon(get_lucide_icon("rotate-cw", color="#f8fafc"))
+        self.rotate_cw_btn.setIconSize(QSize(12, 12))
+        self.rotate_cw_btn.setStyleSheet("""
+            QPushButton {
+                color: #f8fafc;
+                background-color: rgba(30, 41, 59, 200);
+                border: 1px solid #475569;
+                border-radius: 12px;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(51, 65, 85, 220);
+                border-color: #38bdf8;
+            }
+        """)
+        self.rotate_cw_btn.clicked.connect(self.rotate_clockwise)
+        self.rotate_cw_btn.setToolTip("Rotate view clockwise (90°)")
+        self.rotate_cw_btn.hide()
+
+        self.rotate_ccw_btn = QPushButton(self)
+        self.rotate_ccw_btn.setIcon(get_lucide_icon("rotate-ccw", color="#f8fafc"))
+        self.rotate_ccw_btn.setIconSize(QSize(12, 12))
+        self.rotate_ccw_btn.setStyleSheet("""
+            QPushButton {
+                color: #f8fafc;
+                background-color: rgba(30, 41, 59, 200);
+                border: 1px solid #475569;
+                border-radius: 12px;
+                padding: 4px;
+            }
+            QPushButton:hover {
+                background-color: rgba(51, 65, 85, 220);
+                border-color: #38bdf8;
+            }
+        """)
+        self.rotate_ccw_btn.clicked.connect(self.rotate_counter_clockwise)
+        self.rotate_ccw_btn.setToolTip("Rotate view counter-clockwise (90°)")
+        self.rotate_ccw_btn.hide()
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -393,6 +435,44 @@ class CameraWidget(QGraphicsView):
             )
             offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + offset_vit + 10
             self.triangulate_btn.move(self.width() - w_tri - offset_x, 10)
+
+        # Determine visibility of manual rotation buttons
+        bbox = (
+            self.current_annotation.get("bbox", [0, 0, 0, 0])
+            if self.current_annotation
+            else [0, 0, 0, 0]
+        )
+        has_bbox = bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0
+        show_rotate = self.view_mode == "bbox" and has_bbox
+
+        if hasattr(self, "rotate_ccw_btn") and self.rotate_ccw_btn:
+            if show_rotate:
+                self.rotate_ccw_btn.show()
+                self.rotate_ccw_btn.raise_()
+            else:
+                self.rotate_ccw_btn.hide()
+
+        if hasattr(self, "rotate_cw_btn") and self.rotate_cw_btn:
+            if show_rotate:
+                self.rotate_cw_btn.show()
+                self.rotate_cw_btn.raise_()
+            else:
+                self.rotate_cw_btn.hide()
+
+        if show_rotate:
+            margin_x = 10
+            margin_y = 10
+            btn_w, btn_h = 24, 24
+            self.rotate_ccw_btn.resize(btn_w, btn_h)
+            self.rotate_cw_btn.resize(btn_w, btn_h)
+
+            rect = self.viewport().geometry()
+            x_cw = rect.x() + rect.width() - btn_w - margin_x
+            x_ccw = rect.x() + rect.width() - btn_w - btn_w - 6 - margin_x
+            y_pos = rect.y() + rect.height() - btn_h - margin_y
+
+            self.rotate_ccw_btn.move(x_ccw, y_pos)
+            self.rotate_cw_btn.move(x_cw, y_pos)
 
     def mousePressEvent(self, event):
         self.setFocus()
@@ -799,10 +879,10 @@ class CameraWidget(QGraphicsView):
                     angle = round(raw_angle / 90.0) * 90.0
 
         # Save rotation angle for cursor mapping in BBoxItem
-        self.current_rotation_angle = angle
+        self.current_rotation_angle = (angle + self.manual_rotation_offset) % 360.0
 
         # Rotate view
-        self.rotate(angle)
+        self.rotate(self.current_rotation_angle)
 
         # Fit in view with bounding box
         if bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0:
@@ -857,6 +937,7 @@ class CameraWidget(QGraphicsView):
             configure_button(self.toggle_view_btn, icon_name="minimize-2")
         self.user_has_zoomed_or_panned = False
         self.refresh_view()
+        self.update_button_positions()
 
     def zoom_to_bbox(self):
         """Forces bbox view mode and applies it."""
@@ -864,6 +945,19 @@ class CameraWidget(QGraphicsView):
         configure_button(self.toggle_view_btn, icon_name="minimize-2")
         self.user_has_zoomed_or_panned = False
         self.apply_bbox_view()
+        self.update_button_positions()
+
+    def rotate_clockwise(self):
+        """Manually rotate the view clockwise by 90 degrees in bbox zoom mode."""
+        self.manual_rotation_offset = (self.manual_rotation_offset + 90.0) % 360.0
+        self.user_has_zoomed_or_panned = False
+        self.refresh_view()
+
+    def rotate_counter_clockwise(self):
+        """Manually rotate the view counter-clockwise by 90 degrees in bbox zoom mode."""
+        self.manual_rotation_offset = (self.manual_rotation_offset - 90.0) % 360.0
+        self.user_has_zoomed_or_panned = False
+        self.refresh_view()
 
     def update_keypoint_pos(self, point_id, x, y, save_and_sync=False):
         """Triggered when user drags a KeypointItem. Updates local database and skeleton lines."""
