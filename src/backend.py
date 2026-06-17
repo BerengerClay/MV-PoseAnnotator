@@ -151,7 +151,7 @@ class ModelWrapper:
 
         return x, y
 
-    def run_vitpose(self, image_path, bbox):
+    def run_vitpose(self, image_path, bbox, threshold=0.3):
         """Runs ViTPose on the cropped bounding box to get 17 COCO 2D keypoints."""
         self.init_vitpose()
         
@@ -201,7 +201,7 @@ class ModelWrapper:
             # Get argmax index
             idx = hm.argmax()
             y_hm, x_hm = np.unravel_index(idx, hm.shape)
-            float(hm[y_hm, x_hm])
+            conf = float(hm[y_hm, x_hm])
             
             # Map back to crop coordinates (upsample from 64x48 to 256x192)
             # 256 / 64 = 4.0, 192 / 48 = 4.0
@@ -214,10 +214,14 @@ class ModelWrapper:
             x_orig = float(x1 + x_bbox)
             y_orig = float(y1 + y_bbox)
             
-            # Visibility: 2 = Manual/Confirmed, 1 = Estimated/Low Conf (we mark as 2 by default so user can edit directly)
-            keypoints.append([x_orig, y_orig, 2])
+            # Visibility: if confidence is below threshold, filter it out (visibility 0)
+            if conf >= threshold:
+                keypoints.append([x_orig, y_orig, conf])
+            else:
+                keypoints.append([0.0, 0.0, 0.0])
             
         return keypoints
+
 
     def run_yolo_batch(self, image_paths):
         """Detects bounding boxes for a batch of image paths using YOLO."""
@@ -249,7 +253,7 @@ class ModelWrapper:
             bboxes.append(bbox)
         return bboxes
 
-    def run_vitpose_batch(self, image_paths, bboxes):
+    def run_vitpose_batch(self, image_paths, bboxes, threshold=0.3):
         """Runs ViTPose in batch mode on multiple cropped bounding boxes."""
         self.init_vitpose()
         
@@ -309,6 +313,7 @@ class ModelWrapper:
                 hm = heatmaps[j]
                 val_idx = hm.argmax()
                 y_hm, x_hm = np.unravel_index(val_idx, hm.shape)
+                conf = float(hm[y_hm, x_hm])
                 
                 x_crop = (x_hm + 0.5) * 4.0
                 y_crop = (y_hm + 0.5) * 4.0
@@ -318,7 +323,10 @@ class ModelWrapper:
                 x_orig = float(x1 + x_bbox)
                 y_orig = float(y1 + y_bbox)
                 
-                keypoints.append([x_orig, y_orig, 2])
+                if conf >= threshold:
+                    keypoints.append([x_orig, y_orig, conf])
+                else:
+                    keypoints.append([0.0, 0.0, 0.0])
             results[idx] = keypoints
             
         return results

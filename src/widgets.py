@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QWidgetAction,
+    QApplication,
 )
 from PyQt6.QtGui import QPixmap, QColor, QPen, QBrush, QCursor, QPainter
 from PyQt6.QtCore import Qt, QPointF, QRectF, QSize
@@ -257,6 +258,28 @@ class CameraWidget(QGraphicsView):
         self.rotate_ccw_btn.setToolTip("Rotate view counter-clockwise (90°)")
         self.rotate_ccw_btn.hide()
 
+    def start_panning(self, pos):
+        """Start canvas panning with ClosedHandCursor override."""
+        if not self._panning:
+            self._panning = True
+            self._pan_start = pos
+            self._right_click_start = pos
+            QApplication.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def stop_panning(self):
+        """Stop canvas panning and restore cursor."""
+        if self._panning:
+            self._panning = False
+            QApplication.restoreOverrideCursor()
+
+    def hideEvent(self, event):
+        self.stop_panning()
+        super().hideEvent(event)
+
+    def focusOutEvent(self, event):
+        self.stop_panning()
+        super().focusOutEvent(event)
+
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.main_win.toggle_maximize_camera(self.camera_id)
@@ -492,10 +515,7 @@ class CameraWidget(QGraphicsView):
             event.accept()
         # Right click to pan canvas
         elif event.button() == Qt.MouseButton.RightButton:
-            self._panning = True
-            self._pan_start = event.pos()
-            self._right_click_start = event.pos()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.start_panning(event.pos())
             event.accept()
         else:
             super().mousePressEvent(event)
@@ -530,17 +550,31 @@ class CameraWidget(QGraphicsView):
             self.bbox_item.setPen(QPen(QColor(234, 179, 8), 2))  # Solid yellow
             event.accept()
         elif event.button() == Qt.MouseButton.RightButton:
-            self._panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            event.accept()
-
-            # Check if it was a right-click without drag (panning distance is small)
             click_start = getattr(self, "_right_click_start", None)
+            drag_dist = 0
             if click_start is not None:
                 drag_dist = (event.pos() - click_start).manhattanLength()
-                self._right_click_start = None
-                if drag_dist < 5:
-                    self.show_insert_keypoint_menu()
+
+            self.stop_panning()
+            event.accept()
+
+            if click_start is not None and drag_dist < 5:
+                self.show_insert_keypoint_menu()
+
+            # Synthesize a mouse move event to update the graphics scene's hover state at the new position
+            from PyQt6.QtGui import QMouseEvent
+            from PyQt6.QtCore import QEvent
+            pos = event.position()
+            global_pos = event.globalPosition()
+            fake_move = QMouseEvent(
+                QEvent.Type.MouseMove,
+                pos,
+                global_pos,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                event.modifiers()
+            )
+            super().mouseMoveEvent(fake_move)
         else:
             super().mouseReleaseEvent(event)
 
@@ -602,6 +636,7 @@ class CameraWidget(QGraphicsView):
 
     def load_frame(self, img_path, annotation, preserve_view=False):
         """Loads and draws image, bbox, keypoints, and skeleton."""
+        self.stop_panning()
         log_debug(f"CameraWidget.load_frame started for camera {self.camera_name}, img_path={img_path}")
         # Save zoom/pan state if we are reloading the same image frame and preserve_view is requested
         is_same_image = (

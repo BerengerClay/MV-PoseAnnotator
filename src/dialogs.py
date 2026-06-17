@@ -54,12 +54,20 @@ class SettingsDialog(QDialog):
             self.original_delete_bbox = getattr(
                 parent, "delete_bbox_on_clear", False
             )
+            self.original_show_confidence = getattr(
+                parent, "vitpose_show_confidence", True
+            )
+            self.original_threshold = getattr(
+                parent, "vitpose_threshold", 0.3
+            )
         else:
             self.original_kp_radius = 3
             self.original_rotate = True
             self.original_reproject = False
             self.original_realtime_tri = False
             self.original_delete_bbox = False
+            self.original_show_confidence = True
+            self.original_threshold = 0.3
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -102,6 +110,13 @@ class SettingsDialog(QDialog):
             self.chk_delete_bbox.toggled.connect(self.on_delete_bbox_toggled)
         layout.addWidget(self.chk_delete_bbox)
 
+        # Show confidence checkbox
+        self.chk_show_confidence = QCheckBox("Show ViTPose confidence (opacity based on confidence)")
+        self.chk_show_confidence.setChecked(parent.vitpose_show_confidence if parent else True)
+        if parent:
+            self.chk_show_confidence.toggled.connect(self.on_show_confidence_toggled)
+        layout.addWidget(self.chk_show_confidence)
+
         # Keypoint size slider layout
         kp_size_layout = QHBoxLayout()
         kp_size_lbl = QLabel("Keypoint Size:")
@@ -133,6 +148,36 @@ class SettingsDialog(QDialog):
         kp_size_layout.addWidget(kp_size_lbl)
         kp_size_layout.addWidget(self.slider_kp_size)
         layout.addLayout(kp_size_layout)
+
+        # ViTPose Threshold slider layout
+        threshold_layout = QHBoxLayout()
+        self.lbl_threshold = QLabel(f"ViTPose Threshold: {self.original_threshold:.2f}")
+        self.lbl_threshold.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 12px;")
+
+        self.slider_threshold = QSlider(Qt.Orientation.Horizontal)
+        self.slider_threshold.setRange(0, 100)
+        self.slider_threshold.setValue(int(self.original_threshold * 100))
+        self.slider_threshold.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #475569;
+                height: 6px;
+                background: #1e293b;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #38bdf8;
+                border: 1px solid #0284c7;
+                width: 14px;
+                height: 14px;
+                margin-top: -4px;
+                margin-bottom: -4px;
+                border-radius: 7px;
+            }
+        """)
+        self.slider_threshold.valueChanged.connect(self.on_threshold_changed)
+        threshold_layout.addWidget(self.lbl_threshold)
+        threshold_layout.addWidget(self.slider_threshold)
+        layout.addLayout(threshold_layout)
 
         # Help & Controls Box
         help_group = QGroupBox("Keyboard Shortcuts & Controls")
@@ -238,6 +283,17 @@ class SettingsDialog(QDialog):
         if self.parent_win:
             self.parent_win.delete_bbox_on_clear = checked
 
+    def on_show_confidence_toggled(self, checked):
+        if self.parent_win:
+            self.parent_win.vitpose_show_confidence = checked
+            self.parent_win.show_current_frame(preserve_view=True)
+
+    def on_threshold_changed(self, value):
+        threshold_val = value / 100.0
+        self.lbl_threshold.setText(f"ViTPose Threshold: {threshold_val:.2f}")
+        if self.parent_win:
+            self.parent_win.vitpose_threshold = threshold_val
+
     def accept(self):
         if self.parent_win:
             self.parent_win.save_local_settings()
@@ -250,6 +306,8 @@ class SettingsDialog(QDialog):
             self.parent_win.show_3d_reprojection = self.original_reproject
             self.parent_win.realtime_triangulation_enabled = self.original_realtime_tri
             self.parent_win.delete_bbox_on_clear = self.original_delete_bbox
+            self.parent_win.vitpose_show_confidence = self.original_show_confidence
+            self.parent_win.vitpose_threshold = self.original_threshold
             # Re-apply orientations
             for cam in self.parent_win.camera_widgets:
                 if cam.view_mode == "bbox":

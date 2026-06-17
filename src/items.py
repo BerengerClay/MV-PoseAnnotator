@@ -15,7 +15,7 @@ class KeypointItem(QGraphicsEllipseItem):
         self.parent_widget = parent_widget
         self.kv = kv
         
-        # Color based on joint type
+        # Color based on joint type (fully opaque, keep current colors)
         color = KEYPOINT_COLORS.get(point_id, QColor(0, 255, 0))
         self.setBrush(QBrush(color))
         self.update_pen(radius)
@@ -25,8 +25,10 @@ class KeypointItem(QGraphicsEllipseItem):
                       QGraphicsEllipseItem.GraphicsItemFlag.ItemIsSelectable |
                       QGraphicsEllipseItem.GraphicsItemFlag.ItemIsFocusable)
         self.setAcceptHoverEvents(True)
-        self.setToolTip(f"{name} (ID: {point_id})")
+        conf_str = "Manual" if self.kv >= 2.0 else f"{self.kv:.2f}"
+        self.setToolTip(f"{name} (ID: {point_id}, Conf: {conf_str})")
         self.setZValue(5.0)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         
         # Group dragging states
         self._is_dragging_group = False
@@ -34,15 +36,24 @@ class KeypointItem(QGraphicsEllipseItem):
         self._selected_bboxes_to_drag = []
         self._drag_start_positions = {}
         self._drag_start_scene = QPointF()
-
+ 
     def update_pen(self, radius):
-        """Scale border thickness dynamically with circle size."""
+        """Scale border thickness and interpolate color between black and white based on confidence."""
         pen_width = max(1.0, radius / 4.0)
-        if self.kv == 1:
+        
+        show_conf = False
+        if self.parent_widget and self.parent_widget.main_win:
+            show_conf = getattr(self.parent_widget.main_win, "vitpose_show_confidence", True)
+            
+        if show_conf and self.kv <= 1.0:
+            # Interpolate contour color between black (0) and white (255) based on self.kv
+            c_val = int(max(0.0, min(1.0, self.kv)) * 255)
+            self.setPen(QPen(QColor(c_val, c_val, c_val), pen_width))
+        elif self.kv == 1:
             self.setPen(QPen(QColor(234, 179, 8), pen_width, Qt.PenStyle.DashLine))
         else:
             self.setPen(QPen(Qt.GlobalColor.white, pen_width))
-
+ 
     def itemChange(self, change, value):
         if change == QGraphicsEllipseItem.GraphicsItemChange.ItemPositionChange and self.parent_widget:
             new_pos = value
@@ -50,10 +61,11 @@ class KeypointItem(QGraphicsEllipseItem):
             self.parent_widget.update_keypoint_pos(self.point_id, new_pos.x(), new_pos.y(), save_and_sync=False)
             
             # Transition visibility to 2 (manual reference) immediately on drag
-            if self.kv == 1:
-                self.kv = 2
+            if self.kv <= 1.0:
+                self.kv = 2.0
                 radius = self.rect().width() / 2.0
                 self.update_pen(radius)
+                self.setToolTip(f"{self.name} (ID: {self.point_id}, Conf: Manual)")
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
@@ -74,6 +86,9 @@ class KeypointItem(QGraphicsEllipseItem):
             if self.parent_widget and self.parent_widget.main_win:
                 self.parent_widget.main_win.push_undo()
                 
+            # Let the default graphics scene update its selection state first
+            super().mousePressEvent(event)
+                
             # Multi-selection group drag initialization
             selected_items = self.parent_widget.scene.selectedItems()
             self._selected_kps_to_drag = [item for item in selected_items if isinstance(item, KeypointItem)]
@@ -92,7 +107,13 @@ class KeypointItem(QGraphicsEllipseItem):
             self._drag_start_scene = event.scenePos()
             self._is_dragging_group = True
             self._has_moved = False
-            super().mousePressEvent(event)
+            
+            # Show ClosedHandCursor during dragging
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self.parent_widget:
+                self.parent_widget.setCursor(Qt.CursorShape.ClosedHandCursor)
+                if hasattr(self.parent_widget, 'viewport') and self.parent_widget.viewport():
+                    self.parent_widget.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
         else:
             super().mousePressEvent(event)
 
@@ -133,7 +154,14 @@ class KeypointItem(QGraphicsEllipseItem):
         if has_moved and self.scene():
             self.scene().clearSelection()
 
-        if self.parent_widget and self.parent_widget.main_win:
+        # Always restore default cursors on mouse release
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        if self.parent_widget:
+            self.parent_widget.unsetCursor()
+            if hasattr(self.parent_widget, 'viewport') and self.parent_widget.viewport():
+                self.parent_widget.viewport().unsetCursor()
+
+        if has_moved and self.parent_widget and self.parent_widget.main_win:
             main_win = self.parent_widget.main_win
             main_win.save_annotations()
             main_win.update_3d_view()
@@ -149,7 +177,10 @@ class KeypointItem(QGraphicsEllipseItem):
     def hoverEnterEvent(self, event):
         # Always display hovered point name in status bar, even when Delete key is held
         if self.parent_widget and self.parent_widget.main_win:
-            self.parent_widget.main_win.status_bar.showMessage(f"Hovered Joint: {self.name} (ID: {self.point_id})")
+            conf_str = "Manual" if self.kv >= 2.0 else f"{self.kv:.2f}"
+            self.parent_widget.main_win.status_bar.showMessage(
+                f"Hovered Joint: {self.name} (ID: {self.point_id}, Conf: {conf_str})"
+            )
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
@@ -344,23 +375,28 @@ class BBoxItem(QGraphicsRectItem):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Delete only when the Delete key is held down and we left-click on the bbox
-            if getattr(self.parent_widget, 'delete_key_pressed', False):
-                selected_items = self.parent_widget.scene.selectedItems()
-                selected_bboxes = [item for item in selected_items if isinstance(item, BBoxItem)]
-                selected_kps = [item for item in selected_items if isinstance(item, KeypointItem)]
-                if self in selected_bboxes:
-                    for bbox in selected_bboxes:
-                        bbox.delete_bbox()
-                    if selected_kps:
-                        self.parent_widget.delete_multiple_keypoints(selected_kps)
-                else:
-                    self.delete_bbox()
-                event.accept()
-                return
             pos = event.pos()
             element = self.get_element_at_pos(pos)
             self.active_handle = element
+            
+            # Delete only when the Delete key is held down and we left-click on the bbox border/handles
+            if getattr(self.parent_widget, 'delete_key_pressed', False):
+                if element is not None:
+                    selected_items = self.parent_widget.scene.selectedItems()
+                    selected_bboxes = [item for item in selected_items if isinstance(item, BBoxItem)]
+                    selected_kps = [item for item in selected_items if isinstance(item, KeypointItem)]
+                    if self in selected_bboxes:
+                        for bbox in selected_bboxes:
+                            bbox.delete_bbox()
+                        if selected_kps:
+                            self.parent_widget.delete_multiple_keypoints(selected_kps)
+                    else:
+                        self.delete_bbox()
+                    event.accept()
+                    return
+                else:
+                    event.ignore()
+                    return
             
             ctrl_pressed = event.modifiers() & Qt.KeyboardModifier.ControlModifier
             
@@ -397,6 +433,10 @@ class BBoxItem(QGraphicsRectItem):
                     self._resize_start_rect = self.rect()
                     self._resize_start_local = pos
                 event.accept()
+                return
+            else:
+                # If they clicked in the center (empty area), ignore the event so it passes through to background/keypoints!
+                event.ignore()
                 return
         super().mousePressEvent(event)
 
@@ -480,6 +520,12 @@ class BBoxItem(QGraphicsRectItem):
             if getattr(self, '_has_moved', False) and self.scene():
                 self.scene().clearSelection()
 
+            # Always restore default cursors on mouse release for bbox
+            if self.parent_widget:
+                self.parent_widget.unsetCursor()
+                if hasattr(self.parent_widget, 'viewport') and self.parent_widget.viewport():
+                    self.parent_widget.viewport().unsetCursor()
+ 
             # Trigger save/3d updates
             if self.parent_widget and self.parent_widget.main_win:
                 main_win = self.parent_widget.main_win
@@ -497,6 +543,12 @@ class BBoxItem(QGraphicsRectItem):
             p = self.pos()
             bbox_coords = [float(p.x() + r.x()), float(p.y() + r.y()), float(r.width()), float(r.height())]
             
+            # Always restore default cursors on mouse release for bbox
+            if self.parent_widget:
+                self.parent_widget.unsetCursor()
+                if hasattr(self.parent_widget, 'viewport') and self.parent_widget.viewport():
+                    self.parent_widget.viewport().unsetCursor()
+
             # Defer execution to avoid deleting self within event handler
             QTimer.singleShot(0, lambda: self.parent_widget.main_win.update_bbox(self.parent_widget.camera_id, bbox_coords))
             

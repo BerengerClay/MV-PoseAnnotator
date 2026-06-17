@@ -22,7 +22,8 @@ class WorkerThread(QThread):
                 # 2. Run ViTPose on the detected bbox
                 keypoints = None
                 if bbox:
-                    keypoints = self.model_wrapper.run_vitpose(image_path, bbox)
+                    threshold = self.args.get("threshold", 0.3)
+                    keypoints = self.model_wrapper.run_vitpose(image_path, bbox, threshold=threshold)
                 self.finished.emit({
                     "camera_id": camera_id,
                     "bbox": bbox,
@@ -32,7 +33,8 @@ class WorkerThread(QThread):
                 image_path = self.args["image_path"]
                 camera_id = self.args["camera_id"]
                 bbox = self.args["bbox"]
-                keypoints = self.model_wrapper.run_vitpose(image_path, bbox)
+                threshold = self.args.get("threshold", 0.3)
+                keypoints = self.model_wrapper.run_vitpose(image_path, bbox, threshold=threshold)
                 self.finished.emit({
                     "camera_id": camera_id,
                     "bbox": bbox,
@@ -48,13 +50,14 @@ class SequencePreprocessWorker(QThread):
     finished = pyqtSignal(int)
     error = pyqtSignal(str)
 
-    def __init__(self, model_wrapper, sorted_frames, frame_data, img_file_map, img_ann_map):
+    def __init__(self, model_wrapper, sorted_frames, frame_data, img_file_map, img_ann_map, threshold=0.3):
         super().__init__()
         self.model_wrapper = model_wrapper
         self.sorted_frames = sorted_frames
         self.frame_data = frame_data
         self.img_file_map = img_file_map
         self.img_ann_map = img_ann_map
+        self.threshold = threshold
         self._is_cancelled = False
 
     def cancel(self):
@@ -99,7 +102,7 @@ class SequencePreprocessWorker(QThread):
                 bboxes = self.model_wrapper.run_yolo_batch(paths)
                 
                 # 2. Run ViTPose batch on the images
-                keypoints_list = self.model_wrapper.run_vitpose_batch(paths, bboxes)
+                keypoints_list = self.model_wrapper.run_vitpose_batch(paths, bboxes, threshold=self.threshold)
                 
                 # 3. Save predictions back to memory database
                 for idx, (cam_key, path, img_id, ann) in enumerate(images_to_process):
