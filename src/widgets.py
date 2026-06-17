@@ -513,10 +513,21 @@ class CameraWidget(QGraphicsView):
                 QPen(QColor(234, 179, 8), 2, Qt.PenStyle.DashLine),
             )  # Yellow dash
             event.accept()
-        # Right click to pan canvas
+        # Right click to pan canvas or delete keypoint
         elif event.button() == Qt.MouseButton.RightButton:
-            self.start_panning(event.pos())
-            event.accept()
+            # Check if right-clicking on a KeypointItem
+            clicked_item = None
+            for item in self.items(event.pos()):
+                if isinstance(item, KeypointItem):
+                    clicked_item = item
+                    break
+
+            if clicked_item is not None:
+                self.show_delete_keypoint_menu(clicked_item, event.globalPosition().toPoint())
+                event.accept()
+            else:
+                self.start_panning(event.pos())
+                event.accept()
         else:
             super().mousePressEvent(event)
 
@@ -1209,6 +1220,69 @@ class CameraWidget(QGraphicsView):
                 self.load_frame(self.current_img_path, ann, preserve_view=True)
                 self.main_win.update_active_widgets_state()
                 self.main_win.save_annotations()
+
+    def show_delete_keypoint_menu(self, keypoint_item, global_pos=None):
+        """Displays a context menu to delete the specified keypoint with a styled layout."""
+        if not hasattr(self, "current_annotation") or not self.current_annotation:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e293b;
+                border: 1px solid #475569;
+            }
+            QMenu::item {
+                padding: 6px 20px 6px 15px;
+            }
+            QMenu::item:selected {
+                background-color: #334155;
+            }
+        """)
+
+        # Get keypoint details
+        idx = keypoint_item.point_id
+        name = COCO_KEYPOINTS[idx]
+        color = KEYPOINT_COLORS.get(idx, QColor(255, 255, 255))
+
+        action = QWidgetAction(menu)
+        container = QWidget()
+        container.setStyleSheet("background-color: transparent;")
+        container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(15, 6, 20, 6)
+        layout.setSpacing(8)
+
+        # Color circle
+        circle_lbl = QLabel()
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(0, 0, 10, 10)
+        painter.end()
+        circle_lbl.setPixmap(pixmap)
+        layout.addWidget(circle_lbl)
+
+        # Text label styled in red or with standard text indicating deletion
+        name_lbl = QLabel(f"Delete {name}")
+        name_lbl.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 11px; background-color: transparent;")
+        layout.addWidget(name_lbl)
+        layout.addStretch()
+
+        container.setLayout(layout)
+        action.setDefaultWidget(container)
+        menu.addAction(action)
+
+        if global_pos is None:
+            global_pos = QCursor.pos()
+
+        selected_action = menu.exec(global_pos)
+        if selected_action == action:
+            self.delete_keypoint(idx)
 
     def run_vitpose_on_this_view(self):
         """Triggers ViTPose inference on this camera view's bounding box."""
