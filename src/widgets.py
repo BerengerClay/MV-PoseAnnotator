@@ -30,6 +30,7 @@ from src.icons import get_lucide_icon, configure_button
 def log_debug(msg):
     try:
         import datetime
+
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         with open("annotator.log", "a", encoding="utf-8") as f:
             f.write(f"[{now}] [Widgets] {msg}\n")
@@ -214,7 +215,9 @@ class CameraWidget(QGraphicsView):
             }
         """)
         self.triangulate_btn.clicked.connect(self.run_triangulation_on_this_view)
-        self.triangulate_btn.setToolTip("Triangulate points from other views and place on this view")
+        self.triangulate_btn.setToolTip(
+            "Triangulate points from other views and place on this view"
+        )
         self.triangulate_btn.hide()
 
         # Manual rotation buttons (bottom right)
@@ -413,7 +416,9 @@ class CameraWidget(QGraphicsView):
             )
             offset_copy = (
                 (w_copy + 6)
-                if (hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden())
+                if (
+                    hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden()
+                )
                 else 0
             )
             offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + 10
@@ -448,7 +453,9 @@ class CameraWidget(QGraphicsView):
             )
             offset_copy = (
                 (w_copy + 6)
-                if (hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden())
+                if (
+                    hasattr(self, "copy_prev_btn") and not self.copy_prev_btn.isHidden()
+                )
                 else 0
             )
             offset_vit = (
@@ -456,7 +463,14 @@ class CameraWidget(QGraphicsView):
                 if (hasattr(self, "vitpose_btn") and not self.vitpose_btn.isHidden())
                 else 0
             )
-            offset_x = offset_toggle + offset_delete + offset_swap + offset_copy + offset_vit + 10
+            offset_x = (
+                offset_toggle
+                + offset_delete
+                + offset_swap
+                + offset_copy
+                + offset_vit
+                + 10
+            )
             self.triangulate_btn.move(self.width() - w_tri - offset_x, 10)
 
         # Determine visibility of manual rotation buttons
@@ -513,17 +527,30 @@ class CameraWidget(QGraphicsView):
                 QPen(QColor(234, 179, 8), 2, Qt.PenStyle.DashLine),
             )  # Yellow dash
             event.accept()
-        # Right click to pan canvas or delete keypoint
+        # Right click to pan canvas, delete keypoint, or delete selection
         elif event.button() == Qt.MouseButton.RightButton:
-            # Check if right-clicking on a KeypointItem
+            # Check if right-clicking on a KeypointItem or a BBoxItem
             clicked_item = None
-            for item in self.items(event.pos()):
+            items_at_pos = self.items(event.pos())
+            for item in items_at_pos:
                 if isinstance(item, KeypointItem):
                     clicked_item = item
                     break
+            if clicked_item is None:
+                for item in items_at_pos:
+                    if isinstance(item, BBoxItem):
+                        clicked_item = item
+                        break
 
-            if clicked_item is not None:
-                self.show_delete_keypoint_menu(clicked_item, event.globalPosition().toPoint())
+            if isinstance(clicked_item, KeypointItem):
+                self.show_delete_keypoint_menu(
+                    clicked_item, event.globalPosition().toPoint()
+                )
+                event.accept()
+            elif isinstance(clicked_item, BBoxItem):
+                self.show_bbox_context_menu(
+                    clicked_item, event.globalPosition().toPoint()
+                )
                 event.accept()
             else:
                 self.start_panning(event.pos())
@@ -575,6 +602,7 @@ class CameraWidget(QGraphicsView):
             # Synthesize a mouse move event to update the graphics scene's hover state at the new position
             from PyQt6.QtGui import QMouseEvent
             from PyQt6.QtCore import QEvent
+
             pos = event.position()
             global_pos = event.globalPosition()
             fake_move = QMouseEvent(
@@ -583,7 +611,7 @@ class CameraWidget(QGraphicsView):
                 global_pos,
                 Qt.MouseButton.NoButton,
                 Qt.MouseButton.NoButton,
-                event.modifiers()
+                event.modifiers(),
             )
             super().mouseMoveEvent(fake_move)
         else:
@@ -648,7 +676,9 @@ class CameraWidget(QGraphicsView):
     def load_frame(self, img_path, annotation, preserve_view=False):
         """Loads and draws image, bbox, keypoints, and skeleton."""
         self.stop_panning()
-        log_debug(f"CameraWidget.load_frame started for camera {self.camera_name}, img_path={img_path}")
+        log_debug(
+            f"CameraWidget.load_frame started for camera {self.camera_name}, img_path={img_path}"
+        )
         # Save zoom/pan state if we are reloading the same image frame and preserve_view is requested
         is_same_image = (
             hasattr(self, "current_img_path")
@@ -664,10 +694,18 @@ class CameraWidget(QGraphicsView):
             v_val = self.verticalScrollBar().value()
 
         # Preserve selected items state across scene clearing
-        selected_point_ids = {kp.point_id for kp in self.keypoint_items.values() if kp.isSelected()}
-        bbox_selected = self.bbox_item.isSelected() if (hasattr(self, 'bbox_item') and self.bbox_item is not None) else False
+        selected_point_ids = {
+            kp.point_id for kp in self.keypoint_items.values() if kp.isSelected()
+        }
+        bbox_selected = (
+            self.bbox_item.isSelected()
+            if (hasattr(self, "bbox_item") and self.bbox_item is not None)
+            else False
+        )
 
-        log_debug(f"CameraWidget.load_frame clearing scene for camera {self.camera_name}")
+        log_debug(
+            f"CameraWidget.load_frame clearing scene for camera {self.camera_name}"
+        )
         self.scene.clear()
         self.keypoint_items.clear()
         self.skeleton_items.clear()
@@ -677,7 +715,9 @@ class CameraWidget(QGraphicsView):
         self.current_annotation = annotation
 
         if not os.path.exists(img_path):
-            log_debug(f"CameraWidget.load_frame image not found for camera {self.camera_name}")
+            log_debug(
+                f"CameraWidget.load_frame image not found for camera {self.camera_name}"
+            )
             txt_item = self.scene.addText(
                 f"Image not found:\n{os.path.basename(img_path)}"
             )
@@ -790,7 +830,9 @@ class CameraWidget(QGraphicsView):
 
         # Draw reprojected 3D keypoints if enabled
         if self.main_win and getattr(self.main_win, "show_3d_reprojection", False):
-            log_debug(f"CameraWidget.load_frame drawing 3D reprojections for camera {self.camera_name}")
+            log_debug(
+                f"CameraWidget.load_frame drawing 3D reprojections for camera {self.camera_name}"
+            )
             pts_3d = self.main_win.calculate_3d_keypoints()
             if pts_3d is not None and not np.all(np.isnan(pts_3d)):
                 key = CAMERA_KEYS[self.camera_id]
@@ -818,7 +860,9 @@ class CameraWidget(QGraphicsView):
                     X_3d = pts_3d[kp_idx]
                     if not np.isnan(X_3d[0]):
                         if use_distorted:
-                            log_debug(f"CameraWidget.load_frame projecting distorted point {kp_idx} on camera {self.camera_name}")
+                            log_debug(
+                                f"CameraWidget.load_frame projecting distorted point {kp_idx} on camera {self.camera_name}"
+                            )
                             img_pts, _ = cv2.projectPoints(
                                 X_3d.reshape(1, 3), rvec, tvec, K, D
                             )
@@ -826,7 +870,9 @@ class CameraWidget(QGraphicsView):
                             valid = True
                         else:
                             if P is not None:
-                                log_debug(f"CameraWidget.load_frame projecting undistorted point {kp_idx} on camera {self.camera_name}")
+                                log_debug(
+                                    f"CameraWidget.load_frame projecting undistorted point {kp_idx} on camera {self.camera_name}"
+                                )
                                 X_homog = np.array([X_3d[0], X_3d[1], X_3d[2], 1.0])
                                 x_proj = P @ X_homog
                                 if x_proj[2] != 0:
@@ -968,7 +1014,13 @@ class CameraWidget(QGraphicsView):
             if self.current_annotation
             else [0, 0, 0, 0]
         )
-        if self.view_mode == "bbox" and bbox and len(bbox) == 4 and bbox[2] > 0 and bbox[3] > 0:
+        if (
+            self.view_mode == "bbox"
+            and bbox
+            and len(bbox) == 4
+            and bbox[2] > 0
+            and bbox[3] > 0
+        ):
             self.apply_bbox_view()
         else:
             self.apply_global_view()
@@ -1121,7 +1173,9 @@ class CameraWidget(QGraphicsView):
             layout.addWidget(circle_lbl)
 
             name_lbl = QLabel("Add BBox")
-            name_lbl.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 11px; background-color: transparent;")
+            name_lbl.setStyleSheet(
+                "color: #f8fafc; font-weight: bold; font-size: 11px; background-color: transparent;"
+            )
             layout.addWidget(name_lbl)
             layout.addStretch()
 
@@ -1171,7 +1225,9 @@ class CameraWidget(QGraphicsView):
 
                 # Text label styled in white
                 name_lbl = QLabel(f"Add {name}")
-                name_lbl.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 11px; background-color: transparent;")
+                name_lbl.setStyleSheet(
+                    "color: #f8fafc; font-weight: bold; font-size: 11px; background-color: transparent;"
+                )
                 layout.addWidget(name_lbl)
                 layout.addStretch()
 
@@ -1222,7 +1278,7 @@ class CameraWidget(QGraphicsView):
                 self.main_win.save_annotations()
 
     def show_delete_keypoint_menu(self, keypoint_item, global_pos=None):
-        """Displays a context menu to delete the specified keypoint with a styled layout."""
+        """Displays a context menu to delete the specified keypoint or the current selection."""
         if not hasattr(self, "current_annotation") or not self.current_annotation:
             return
 
@@ -1240,49 +1296,228 @@ class CameraWidget(QGraphicsView):
             }
         """)
 
+        actions = {}
+
+        # Get selection
+        selected_items = self.scene.selectedItems()
+        selected_kps = [
+            item for item in selected_items if isinstance(item, KeypointItem)
+        ]
+        selected_bboxes = [
+            item for item in selected_items if isinstance(item, BBoxItem)
+        ]
+
+        # If there are multiple items selected, add "Delete Selection" action
+        if (
+            len(selected_kps) > 1
+            or (selected_kps and selected_bboxes)
+            or len(selected_bboxes) > 1
+        ):
+            action_sel = QWidgetAction(menu)
+            container_sel = QWidget()
+            container_sel.setStyleSheet("background-color: transparent;")
+            container_sel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+            layout_sel = QHBoxLayout(container_sel)
+            layout_sel.setContentsMargins(15, 6, 20, 6)
+            layout_sel.setSpacing(8)
+
+            circle_sel = QLabel()
+            pixmap_sel = QPixmap(10, 10)
+            pixmap_sel.fill(Qt.GlobalColor.transparent)
+            painter_sel = QPainter(pixmap_sel)
+            painter_sel.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter_sel.setBrush(QBrush(QColor(255, 255, 255)))  # White
+            painter_sel.setPen(Qt.PenStyle.NoPen)
+            painter_sel.drawEllipse(0, 0, 10, 10)
+            painter_sel.end()
+            circle_sel.setPixmap(pixmap_sel)
+            layout_sel.addWidget(circle_sel)
+
+            name_sel = QLabel("Delete Selection")
+            name_sel.setStyleSheet(
+                "color: #ef4444; font-weight: bold; font-size: 11px; background-color: transparent;"
+            )
+            layout_sel.addWidget(name_sel)
+            layout_sel.addStretch()
+
+            container_sel.setLayout(layout_sel)
+            action_sel.setDefaultWidget(container_sel)
+            menu.addAction(action_sel)
+            actions[action_sel] = "delete_selection"
+
         # Get keypoint details
         idx = keypoint_item.point_id
         name = COCO_KEYPOINTS[idx]
         color = KEYPOINT_COLORS.get(idx, QColor(255, 255, 255))
 
-        action = QWidgetAction(menu)
-        container = QWidget()
-        container.setStyleSheet("background-color: transparent;")
-        container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        action_kp = QWidgetAction(menu)
+        container_kp = QWidget()
+        container_kp.setStyleSheet("background-color: transparent;")
+        container_kp.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(15, 6, 20, 6)
-        layout.setSpacing(8)
+        layout_kp = QHBoxLayout(container_kp)
+        layout_kp.setContentsMargins(15, 6, 20, 6)
+        layout_kp.setSpacing(8)
 
         # Color circle
-        circle_lbl = QLabel()
-        pixmap = QPixmap(10, 10)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(0, 0, 10, 10)
-        painter.end()
-        circle_lbl.setPixmap(pixmap)
-        layout.addWidget(circle_lbl)
+        circle_kp = QLabel()
+        pixmap_kp = QPixmap(10, 10)
+        pixmap_kp.fill(Qt.GlobalColor.transparent)
+        painter_kp = QPainter(pixmap_kp)
+        painter_kp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter_kp.setBrush(QBrush(color))
+        painter_kp.setPen(Qt.PenStyle.NoPen)
+        painter_kp.drawEllipse(0, 0, 10, 10)
+        painter_kp.end()
+        circle_kp.setPixmap(pixmap_kp)
+        layout_kp.addWidget(circle_kp)
 
-        # Text label styled in red or with standard text indicating deletion
-        name_lbl = QLabel(f"Delete {name}")
-        name_lbl.setStyleSheet("color: #ef4444; font-weight: bold; font-size: 11px; background-color: transparent;")
-        layout.addWidget(name_lbl)
-        layout.addStretch()
+        # Text label styled in red
+        name_kp = QLabel(f"Delete {name}")
+        name_kp.setStyleSheet(
+            "color: #ef4444; font-weight: bold; font-size: 11px; background-color: transparent;"
+        )
+        layout_kp.addWidget(name_kp)
+        layout_kp.addStretch()
 
-        container.setLayout(layout)
-        action.setDefaultWidget(container)
-        menu.addAction(action)
+        container_kp.setLayout(layout_kp)
+        action_kp.setDefaultWidget(container_kp)
+        menu.addAction(action_kp)
+        actions[action_kp] = "delete_keypoint"
 
         if global_pos is None:
             global_pos = QCursor.pos()
 
         selected_action = menu.exec(global_pos)
-        if selected_action == action:
-            self.delete_keypoint(idx)
+        if selected_action in actions:
+            val = actions[selected_action]
+            if val == "delete_selection":
+                if selected_kps:
+                    self.delete_multiple_keypoints(selected_kps)
+                if selected_bboxes:
+                    for bbox in selected_bboxes:
+                        bbox.delete_bbox()
+            elif val == "delete_keypoint":
+                self.delete_keypoint(idx)
+
+    def show_bbox_context_menu(self, bbox_item, global_pos=None):
+        """Displays a context menu when right-clicking on a BBoxItem border or handles."""
+        if not hasattr(self, "current_annotation") or not self.current_annotation:
+            return
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e293b;
+                border: 1px solid #475569;
+            }
+            QMenu::item {
+                padding: 6px 20px 6px 15px;
+            }
+            QMenu::item:selected {
+                background-color: #334155;
+            }
+        """)
+
+        actions = {}
+
+        # Get selection
+        selected_items = self.scene.selectedItems()
+        selected_kps = [
+            item for item in selected_items if isinstance(item, KeypointItem)
+        ]
+        selected_bboxes = [
+            item for item in selected_items if isinstance(item, BBoxItem)
+        ]
+
+        # If multiple items are selected, add "Delete Selection" action
+        if (
+            len(selected_kps) > 1
+            or (selected_kps and selected_bboxes)
+            or len(selected_bboxes) > 1
+        ):
+            action_sel = QWidgetAction(menu)
+            container_sel = QWidget()
+            container_sel.setStyleSheet("background-color: transparent;")
+            container_sel.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+            layout_sel = QHBoxLayout(container_sel)
+            layout_sel.setContentsMargins(15, 6, 20, 6)
+            layout_sel.setSpacing(8)
+
+            circle_sel = QLabel()
+            pixmap_sel = QPixmap(10, 10)
+            pixmap_sel.fill(Qt.GlobalColor.transparent)
+            painter_sel = QPainter(pixmap_sel)
+            painter_sel.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter_sel.setBrush(QBrush(QColor(255, 255, 255)))  # White
+            painter_sel.setPen(Qt.PenStyle.NoPen)
+            painter_sel.drawEllipse(0, 0, 10, 10)
+            painter_sel.end()
+            circle_sel.setPixmap(pixmap_sel)
+            layout_sel.addWidget(circle_sel)
+
+            name_sel = QLabel("Delete Selection")
+            name_sel.setStyleSheet(
+                "color: #f87171; font-weight: bold; font-size: 11px; background-color: transparent;"
+            )
+            layout_sel.addWidget(name_sel)
+            layout_sel.addStretch()
+
+            container_sel.setLayout(layout_sel)
+            action_sel.setDefaultWidget(container_sel)
+            menu.addAction(action_sel)
+            actions[action_sel] = "delete_selection"
+
+        # Add "Delete Bounding Box" action
+        action_bbox = QWidgetAction(menu)
+        container_bbox = QWidget()
+        container_bbox.setStyleSheet("background-color: transparent;")
+        container_bbox.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        layout_bbox = QHBoxLayout(container_bbox)
+        layout_bbox.setContentsMargins(15, 6, 20, 6)
+        layout_bbox.setSpacing(8)
+
+        circle_bbox = QLabel()
+        pixmap_bbox = QPixmap(10, 10)
+        pixmap_bbox.fill(Qt.GlobalColor.transparent)
+        painter_bbox = QPainter(pixmap_bbox)
+        painter_bbox.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter_bbox.setBrush(QBrush(QColor(234, 179, 8)))  # Yellow (bbox color)
+        painter_bbox.setPen(Qt.PenStyle.NoPen)
+        painter_bbox.drawEllipse(0, 0, 10, 10)
+        painter_bbox.end()
+        circle_bbox.setPixmap(pixmap_bbox)
+        layout_bbox.addWidget(circle_bbox)
+
+        name_bbox = QLabel("Delete Bounding Box")
+        name_bbox.setStyleSheet(
+            "color: #ef4444; font-weight: bold; font-size: 11px; background-color: transparent;"
+        )
+        layout_bbox.addWidget(name_bbox)
+        layout_bbox.addStretch()
+
+        container_bbox.setLayout(layout_bbox)
+        action_bbox.setDefaultWidget(container_bbox)
+        menu.addAction(action_bbox)
+        actions[action_bbox] = "delete_bbox"
+
+        if global_pos is None:
+            global_pos = QCursor.pos()
+
+        selected_action = menu.exec(global_pos)
+        if selected_action in actions:
+            val = actions[selected_action]
+            if val == "delete_selection":
+                if selected_kps:
+                    self.delete_multiple_keypoints(selected_kps)
+                if selected_bboxes:
+                    for bbox in selected_bboxes:
+                        bbox.delete_bbox()
+            elif val == "delete_bbox":
+                bbox_item.delete_bbox()
 
     def run_vitpose_on_this_view(self):
         """Triggers ViTPose inference on this camera view's bounding box."""
