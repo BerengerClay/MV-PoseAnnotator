@@ -8,7 +8,7 @@ from ultralytics import YOLO
 
 class ModelWrapper:
     """Wrapper class to handle initialization and inference of YOLO and ViTPose models."""
-    def __init__(self, weights_dir=None, device="cpu"):
+    def __init__(self, weights_dir=None, device="cpu", yolo_path=None, vitpose_path=None):
         self.device = device
         
         # Resolve weights directory relative to root directory if not specified
@@ -19,6 +19,8 @@ class ModelWrapper:
         else:
             self.weights_dir = weights_dir
             
+        self.yolo_path = yolo_path
+        self.vitpose_path = vitpose_path
         self.yolo_model = None
         self.vitpose_model = None
         self.lock = threading.Lock()
@@ -31,9 +33,12 @@ class ModelWrapper:
             if self.yolo_model is not None:
                 return
             
-            pt_path = os.path.join(self.weights_dir, "YOLO26s_best.pt")
-            if not os.path.exists(pt_path):
-                pt_path = os.path.join(self.weights_dir, "yolov8s.pt")
+            if self.yolo_path:
+                pt_path = self.yolo_path
+            else:
+                pt_path = os.path.join(self.weights_dir, "YOLO26s_best.pt")
+                if not os.path.exists(pt_path):
+                    pt_path = os.path.join(self.weights_dir, "yolov8s.pt")
                 
             print(f"Loading YOLO PyTorch model from {pt_path}...")
             try:
@@ -51,8 +56,11 @@ class ModelWrapper:
             if self.vitpose_model is not None:
                 return
             
-            # pth_path = os.path.join(self.weights_dir, "base_coco_AP_epoch_227.pth")
-            pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
+            if self.vitpose_path:
+                pth_path = self.vitpose_path
+            else:
+                pth_path = os.path.join(self.weights_dir, "best_ViTPose-s_AP731.pth")
+                
             if not os.path.exists(pth_path):
                 raise FileNotFoundError(f"ViTPose weights not found at: {pth_path}")
                 

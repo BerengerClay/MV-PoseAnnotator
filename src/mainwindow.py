@@ -84,7 +84,30 @@ class TrampolineAnnotator(QMainWindow):
 
         # Deep learning models
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model_wrapper = ModelWrapper(weights_dir=None, device=self.device)
+
+        # Resolve paths from local settings or use default paths
+        src_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(src_dir)
+        
+        default_yolo_path = os.path.join(root_dir, "weights", "YOLO26s_best.pt")
+        default_vitpose_path = os.path.join(root_dir, "weights", "best_ViTPose-s_AP731.pth")
+        
+        def resolve_path(p, default):
+            if not p:
+                return default
+            if os.path.isabs(p):
+                return p
+            return os.path.abspath(os.path.join(root_dir, p))
+
+        self.yolo_path = resolve_path(saved_settings.get("yolo_path"), default_yolo_path)
+        self.vitpose_path = resolve_path(saved_settings.get("vitpose_path"), default_vitpose_path)
+
+        self.model_wrapper = ModelWrapper(
+            weights_dir=None,
+            device=self.device,
+            yolo_path=self.yolo_path,
+            vitpose_path=self.vitpose_path
+        )
         self.active_worker = None
         self.keypoint_radius = saved_settings.get("keypoint_radius", 3)
         self.visualizer_3d_window = None
@@ -1962,6 +1985,8 @@ class TrampolineAnnotator(QMainWindow):
                 "vitpose_threshold": self.vitpose_threshold,
                 "camera_dirs": getattr(self, "camera_dirs", None),
                 "current_frame_idx": self.current_frame_idx,
+                "yolo_path": getattr(self, "yolo_path", None),
+                "vitpose_path": getattr(self, "vitpose_path", None),
             }
             os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
             with open(SETTINGS_FILE, "w") as f:
