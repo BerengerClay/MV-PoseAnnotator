@@ -792,8 +792,17 @@ class CameraWidget(QGraphicsView):
             self.delete_ann_btn.hide()
             self.swap_lr_btn.hide()
 
-        # Show copy_prev_btn if we are not on the first frame of the sequence
-        if self.main_win and self.main_win.current_frame_idx > 0:
+        # Show copy_prev_btn if we are not on the first frame of the current filtered list
+        has_prev = False
+        if self.main_win and hasattr(self.main_win, "filtered_frame_indices") and self.main_win.filtered_frame_indices:
+            try:
+                p = self.main_win.filtered_frame_indices.index(self.main_win.current_frame_idx)
+                if p > 0:
+                    has_prev = True
+            except ValueError:
+                pass
+
+        if has_prev:
             self.copy_prev_btn.show()
             self.copy_prev_btn.raise_()
         else:
@@ -1623,11 +1632,17 @@ class CameraWidget(QGraphicsView):
             return
 
         main_win = self.main_win
-        if main_win.current_frame_idx <= 0:
-            main_win.status_bar.showMessage("Il n'y a pas de frame précédente.", 3000)
+        try:
+            p = main_win.filtered_frame_indices.index(main_win.current_frame_idx)
+        except ValueError:
+            p = 0
+
+        if p <= 0:
+            main_win.status_bar.showMessage("No previous frame in current navigation mode.", 3000)
             return
 
-        prev_frame_idx = main_win.sorted_frames[main_win.current_frame_idx - 1]
+        prev_idx_in_list = main_win.filtered_frame_indices[p - 1]
+        prev_frame_idx = main_win.sorted_frames[prev_idx_in_list]
         key = self.camera_name
 
         if (

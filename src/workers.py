@@ -50,7 +50,7 @@ class SequencePreprocessWorker(QThread):
     finished = pyqtSignal(int)
     error = pyqtSignal(str)
 
-    def __init__(self, model_wrapper, sorted_frames, frame_data, img_file_map, img_ann_map, threshold=0.3):
+    def __init__(self, model_wrapper, sorted_frames, frame_data, img_file_map, img_ann_map, threshold=0.3, preprocess_mode="yolo_vitpose"):
         super().__init__()
         self.model_wrapper = model_wrapper
         self.sorted_frames = sorted_frames
@@ -58,6 +58,7 @@ class SequencePreprocessWorker(QThread):
         self.img_file_map = img_file_map
         self.img_ann_map = img_ann_map
         self.threshold = threshold
+        self.preprocess_mode = preprocess_mode
         self._is_cancelled = False
 
     def cancel(self):
@@ -67,7 +68,8 @@ class SequencePreprocessWorker(QThread):
         try:
             # First initialize the models to make sure they are loaded
             self.model_wrapper.init_yolo()
-            self.model_wrapper.init_vitpose()
+            if self.preprocess_mode == "yolo_vitpose":
+                self.model_wrapper.init_vitpose()
             
             total_frames = len(self.sorted_frames)
             processed_images_count = 0
@@ -92,7 +94,7 @@ class SequencePreprocessWorker(QThread):
                 
                 if not images_to_process:
                     # All cameras for this frame are already processed
-                    self.progress.emit(f_idx + 1, total_frames, f"Frame {f_idx + 1}/{total_frames} déjà traitée")
+                    self.progress.emit(f_idx + 1, total_frames, f"Frame {f_idx + 1}/{total_frames} already processed")
                     continue
                 
                 # Extract image paths for batch processing
@@ -101,25 +103,28 @@ class SequencePreprocessWorker(QThread):
                 # 1. Run YOLO batch on the images
                 bboxes = self.model_wrapper.run_yolo_batch(paths)
                 
-                # 2. Run ViTPose batch on the images
-                keypoints_list = self.model_wrapper.run_vitpose_batch(paths, bboxes, threshold=self.threshold)
+                # 2. Run ViTPose batch on the images if requested
+                keypoints_list = None
+                if self.preprocess_mode == "yolo_vitpose":
+                    keypoints_list = self.model_wrapper.run_vitpose_batch(paths, bboxes, threshold=self.threshold)
                 
                 # 3. Save predictions back to memory database
                 for idx, (cam_key, path, img_id, ann) in enumerate(images_to_process):
                     bbox = bboxes[idx]
-                    keypoints = keypoints_list[idx]
                     
                     if bbox:
                         ann["bbox"] = bbox
-                        if keypoints:
-                            flat_kps = []
-                            for kp in keypoints:
-                                flat_kps.extend(kp)
-                            ann["keypoints"] = flat_kps
-                            ann["num_keypoints"] = sum(1 for idx_kp in range(17) if flat_kps[idx_kp*3 + 2] > 0)
+                        if keypoints_list and idx < len(keypoints_list):
+                            keypoints = keypoints_list[idx]
+                            if keypoints:
+                                flat_kps = []
+                                for kp in keypoints:
+                                    flat_kps.extend(kp)
+                                ann["keypoints"] = flat_kps
+                                ann["num_keypoints"] = sum(1 for idx_kp in range(17) if flat_kps[idx_kp*3 + 2] > 0)
                         processed_images_count += 1
                 
-                self.progress.emit(f_idx + 1, total_frames, f"Traitement de la frame {f_idx + 1}/{total_frames}...")
+                self.progress.emit(f_idx + 1, total_frames, f"Processing frame {f_idx + 1}/{total_frames}...")
             
             self.finished.emit(processed_images_count)
         except Exception as e:

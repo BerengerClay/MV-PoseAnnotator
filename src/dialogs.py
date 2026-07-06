@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
     QTreeView,
     QAbstractItemView,
     QSpinBox,
+    QRadioButton,
+    QButtonGroup,
 )
 from PyQt6.QtCore import Qt
 
@@ -514,18 +516,23 @@ class PreprocessOptionsDialog(QDialog):
                 padding: 4px 8px;
                 font-size: 12px;
             }
-            QCheckBox {
+            QCheckBox, QRadioButton {
                 color: #f8fafc;
                 font-size: 12px;
             }
-            QCheckBox::indicator {
+            QCheckBox::indicator, QRadioButton::indicator {
                 width: 16px;
                 height: 16px;
                 background-color: #1e293b;
                 border: 1px solid #475569;
+            }
+            QCheckBox::indicator {
                 border-radius: 4px;
             }
-            QCheckBox::indicator:checked {
+            QRadioButton::indicator {
+                border-radius: 8px;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
                 background-color: #38bdf8;
                 border-color: #0284c7;
             }
@@ -544,10 +551,20 @@ class PreprocessOptionsDialog(QDialog):
 
         layout.addWidget(QLabel("<b>Pre-processing Configuration:</b>"))
 
-        # Checkbox to run preprocessing
-        self.chk_run_preprocess = QCheckBox("Run pre-processing (YOLO + ViTPose)")
-        self.chk_run_preprocess.setChecked(True)
-        layout.addWidget(self.chk_run_preprocess)
+        # Radio buttons to run preprocessing
+        self.rb_yolo_vitpose = QRadioButton("Run pre-processing (YOLO + ViTPose)")
+        self.rb_yolo = QRadioButton("Run pre-processing (YOLO only)")
+        self.rb_none = QRadioButton("No pre-processing (Step / Interpolation only)")
+        self.rb_yolo_vitpose.setChecked(True)
+
+        self.btn_group = QButtonGroup(self)
+        self.btn_group.addButton(self.rb_yolo_vitpose)
+        self.btn_group.addButton(self.rb_yolo)
+        self.btn_group.addButton(self.rb_none)
+
+        layout.addWidget(self.rb_yolo_vitpose)
+        layout.addWidget(self.rb_yolo)
+        layout.addWidget(self.rb_none)
 
         # Start frame
         start_layout = QHBoxLayout()
@@ -591,8 +608,15 @@ class PreprocessOptionsDialog(QDialog):
         layout.addWidget(self.buttons)
 
     def get_settings(self):
+        mode = "none"
+        if self.rb_yolo_vitpose.isChecked():
+            mode = "yolo_vitpose"
+        elif self.rb_yolo.isChecked():
+            mode = "yolo"
+
         return {
-            "run_preprocess": self.chk_run_preprocess.isChecked(),
+            "run_preprocess": mode != "none",
+            "preprocess_mode": mode,
             "start_frame_idx": self.spin_start.value() - 1,
             "frame_step": self.spin_step.value(),
         }

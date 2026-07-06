@@ -1086,7 +1086,8 @@ class TrampolineAnnotator(QMainWindow):
                 if settings["run_preprocess"]:
                     self.run_sequence_preprocessing(
                         start_frame_idx=settings["start_frame_idx"],
-                        frame_step=settings["frame_step"]
+                        frame_step=settings["frame_step"],
+                        preprocess_mode=settings["preprocess_mode"]
                     )
                 else:
                     self.frame_step = settings["frame_step"]
@@ -1637,7 +1638,7 @@ class TrampolineAnnotator(QMainWindow):
                     3000,
                 )
 
-    def run_sequence_preprocessing(self, start_frame_idx=None, frame_step=None):
+    def run_sequence_preprocessing(self, start_frame_idx=None, frame_step=None, preprocess_mode=None):
         """Spawns a progress dialog and starts background batch preprocessing of frames using frame step."""
         if (
             not self.coco_data
@@ -1664,6 +1665,7 @@ class TrampolineAnnotator(QMainWindow):
             settings = dialog.get_settings()
             start_frame_idx = settings["start_frame_idx"]
             frame_step = settings["frame_step"]
+            preprocess_mode = settings["preprocess_mode"]
             self.frame_step = frame_step
             self.start_frame_idx = start_frame_idx
             self.save_local_settings()
@@ -1675,6 +1677,8 @@ class TrampolineAnnotator(QMainWindow):
         else:
             self.frame_step = frame_step
             self.start_frame_idx = start_frame_idx
+            if preprocess_mode is None:
+                preprocess_mode = "yolo_vitpose"
             self.save_local_settings()
 
         # Prepare frames subset to process using the frame step starting from start_frame_idx
@@ -1716,6 +1720,7 @@ class TrampolineAnnotator(QMainWindow):
             img_file_map=self.img_file_map,
             img_ann_map=self.img_ann_map,
             threshold=getattr(self, "vitpose_threshold", 0.3),
+            preprocess_mode=preprocess_mode,
         )
         self.active_worker = self.preprocess_worker
 
