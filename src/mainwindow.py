@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QDialog,
     QSpinBox,
+    QMenu,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut, QColor
 from PyQt6.QtCore import Qt, QTimer
@@ -31,6 +32,7 @@ from src.dialogs import (
     SettingsDialog,
     SelectCameraFoldersDialog,
     select_multiple_directories,
+    PreprocessOptionsDialog,
 )
 from src.visualizer3d import Visualizer3DWindow, Visualizer3DWidget
 from src.backend import ModelWrapper
@@ -122,6 +124,15 @@ class TrampolineAnnotator(QMainWindow):
             "vitpose_show_confidence", True
         )
         self.vitpose_threshold = saved_settings.get("vitpose_threshold", 0.2)
+        self.frame_step = saved_settings.get("frame_step", 1)
+        self.start_frame_idx = saved_settings.get("start_frame_idx", 0)
+        self.interpolated_opacity = saved_settings.get("interpolated_opacity", 0.4)
+        # Determine initial navigation mode (map old boolean check if present)
+        if "navigation_mode" in saved_settings:
+            self.navigation_mode = saved_settings["navigation_mode"]
+        else:
+            old_show = saved_settings.get("show_intermediate_frames", True)
+            self.navigation_mode = "all" if old_show else "annotate"
 
         # History stacks for Undo/Redo
         self.undo_stack = []
@@ -435,8 +446,23 @@ class TrampolineAnnotator(QMainWindow):
         self.btn_next = QPushButton("Next")
         self.btn_next.setIcon(get_lucide_icon("arrow-right", color="#ffffff"))
         self.btn_next.clicked.connect(self.next_frame)
+
+        self.btn_nav_mode = QPushButton()
+        self.btn_nav_mode.setFixedWidth(160)
+        self.nav_menu = QMenu(self)
+        self.action_all = self.nav_menu.addAction("All Frames")
+        self.action_annotate = self.nav_menu.addAction("Stepped Frames")
+        self.action_interpolated = self.nav_menu.addAction("Interpolated Frames")
+        self.btn_nav_mode.setMenu(self.nav_menu)
+
+        self.action_all.triggered.connect(lambda: self.set_navigation_mode("all"))
+        self.action_annotate.triggered.connect(lambda: self.set_navigation_mode("annotate"))
+        self.action_interpolated.triggered.connect(lambda: self.set_navigation_mode("interpolated"))
+
+        self.update_nav_mode_button_ui()
         nav_layout.addWidget(self.btn_prev)
         nav_layout.addWidget(self.btn_next)
+        nav_layout.addWidget(self.btn_nav_mode)
 
         # Bottom controls container
         bottom_nav_layout = QVBoxLayout()
@@ -1028,20 +1054,10 @@ class TrampolineAnnotator(QMainWindow):
             if 0 <= saved_frame_idx < len(self.sorted_frames):
                 restore_frame_idx = saved_frame_idx
 
+        self.update_filtered_frames()
         if self.sorted_frames:
             self.slider_frame.setEnabled(True)
-            self.slider_frame.setRange(0, len(self.sorted_frames) - 1)
-            self.slider_frame.blockSignals(True)
-            self.slider_frame.setValue(restore_frame_idx)
-            self.slider_frame.blockSignals(False)
-
             self.spin_frame.setEnabled(True)
-            self.spin_frame.setRange(1, len(self.sorted_frames))
-            self.spin_frame.blockSignals(True)
-            self.spin_frame.setValue(restore_frame_idx + 1)
-            self.spin_frame.blockSignals(False)
-
-            self.lbl_total_frames.setText(f"/ {len(self.sorted_frames)}")
 
         self.current_frame_idx = restore_frame_idx
         self.show_current_frame()
@@ -1059,17 +1075,26 @@ class TrampolineAnnotator(QMainWindow):
             if ann and (not ann.get("bbox") or sum(ann["bbox"]) == 0):
                 unannotated_count += 1
 
-        if unannotated_count > 0:
-            reply = QMessageBox.question(
-                self,
-                "Pre-processing Recommended",
-                f"There are {unannotated_count} images without annotations in this sequence.\n"
-                "Would you like to run automated pre-processing (YOLO + ViTPose) now?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
+        if unannotated_count > 0 and not (self.json_path and os.path.exists(self.json_path)):
+            dialog = PreprocessOptionsDialog(
+                total_frames=len(self.sorted_frames),
+                current_frame_idx=self.current_frame_idx,
+                parent=self
             )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.run_sequence_preprocessing()
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                settings = dialog.get_settings()
+                if settings["run_preprocess"]:
+                    self.run_sequence_preprocessing(
+                        start_frame_idx=settings["start_frame_idx"],
+                        frame_step=settings["frame_step"]
+                    )
+                else:
+                    self.frame_step = settings["frame_step"]
+                    self.start_frame_idx = settings["start_frame_idx"]
+                    if getattr(self, "navigation_mode", "all") != "all":
+                        self.current_frame_idx = self.snap_frame_idx(self.current_frame_idx)
+                        self.show_current_frame()
+                    self.save_local_settings()
         log_debug("load_sequence_from_dirs completed successfully")
 
     def initialize_fresh_coco(self):
@@ -1118,17 +1143,26 @@ class TrampolineAnnotator(QMainWindow):
         log_debug(
             f"show_current_frame started, current_frame_idx={self.current_frame_idx}"
         )
-        if self.current_frame_idx < 0 or self.current_frame_idx >= len(
-            self.sorted_frames
-        ):
-            log_debug("show_current_frame early return due to bounds")
-            return
+        # Ensure current frame idx is snapped to the filtered list
+        if not hasattr(self, "filtered_frame_indices") or not self.filtered_frame_indices:
+            self.update_filtered_frames()
+
+        try:
+            p = self.filtered_frame_indices.index(self.current_frame_idx)
+        except ValueError:
+            self.current_frame_idx = self.snap_frame_idx(self.current_frame_idx)
+            try:
+                p = self.filtered_frame_indices.index(self.current_frame_idx)
+            except ValueError:
+                p = 0
+                self.current_frame_idx = self.filtered_frame_indices[0]
 
         frame_idx = self.sorted_frames[self.current_frame_idx]
         log_debug(f"show_current_frame frame_idx={frame_idx}")
         self.frame_lbl.setText(
-            f"Frame: {self.current_frame_idx + 1} / {len(self.sorted_frames)}"
+            f"Frame: {p + 1} / {len(self.filtered_frame_indices)}"
         )
+        self.lbl_total_frames.setText(f"/ {len(self.filtered_frame_indices)}")
         self.status_bar.showMessage(f"Displaying frame index: {frame_idx}")
 
         maximized_id = self.get_maximized_camera_id()
@@ -1166,13 +1200,15 @@ class TrampolineAnnotator(QMainWindow):
         # Synchronize frame slider
         log_debug("show_current_frame syncing frame slider")
         self.slider_frame.blockSignals(True)
-        self.slider_frame.setValue(self.current_frame_idx)
+        self.slider_frame.setRange(0, max(0, len(self.filtered_frame_indices) - 1))
+        self.slider_frame.setValue(p)
         self.slider_frame.blockSignals(False)
 
         # Synchronize frame spin box
         log_debug("show_current_frame syncing frame spin box")
         self.spin_frame.blockSignals(True)
-        self.spin_frame.setValue(self.current_frame_idx + 1)
+        self.spin_frame.setRange(1, max(1, len(self.filtered_frame_indices)))
+        self.spin_frame.setValue(p + 1)
         self.spin_frame.blockSignals(False)
 
         # Update 3D skeleton visualization
@@ -1601,8 +1637,8 @@ class TrampolineAnnotator(QMainWindow):
                     3000,
                 )
 
-    def run_sequence_preprocessing(self):
-        """Spawns a progress dialog and starts background batch preprocessing of frames from the current frame to the end."""
+    def run_sequence_preprocessing(self, start_frame_idx=None, frame_step=None):
+        """Spawns a progress dialog and starts background batch preprocessing of frames using frame step."""
         if (
             not self.coco_data
             or not self.coco_data.get("images")
@@ -1617,23 +1653,35 @@ class TrampolineAnnotator(QMainWindow):
             )
             return
 
-        current_frame_num = self.current_frame_idx + 1
-        total_seq_frames = len(self.sorted_frames)
+        if start_frame_idx is None or frame_step is None:
+            dialog = PreprocessOptionsDialog(
+                total_frames=len(self.sorted_frames),
+                current_frame_idx=self.current_frame_idx,
+                parent=self
+            )
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            settings = dialog.get_settings()
+            start_frame_idx = settings["start_frame_idx"]
+            frame_step = settings["frame_step"]
+            self.frame_step = frame_step
+            self.start_frame_idx = start_frame_idx
+            self.save_local_settings()
+            if not settings["run_preprocess"]:
+                if getattr(self, "navigation_mode", "all") != "all":
+                    self.current_frame_idx = self.snap_frame_idx(self.current_frame_idx)
+                    self.show_current_frame()
+                return
+        else:
+            self.frame_step = frame_step
+            self.start_frame_idx = start_frame_idx
+            self.save_local_settings()
 
-        reply = QMessageBox.question(
-            self,
-            "Confirm Pre-processing",
-            f"Would you like to run preprocessing (YOLO + ViTPose) from the current frame "
-            f"({current_frame_num}/{total_seq_frames}) to the end of the sequence?\n\n"
-            "This will overwrite all existing bounding boxes and keypoints for these frames.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.No:
-            return
-
-        # Prepare frames subset to process
-        frames_to_process = self.sorted_frames[self.current_frame_idx :]
+        # Prepare frames subset to process using the frame step starting from start_frame_idx
+        step_frames_indices = [
+            i for i in range(self.start_frame_idx, len(self.sorted_frames), self.frame_step)
+        ]
+        frames_to_process = [self.sorted_frames[i] for i in step_frames_indices]
         total_frames = len(frames_to_process)
 
         self.push_undo()
@@ -1714,14 +1762,10 @@ class TrampolineAnnotator(QMainWindow):
         for cam in self.camera_widgets:
             cam.zoom_to_bbox()
 
-        self.update_active_widgets_state()
-
-        # Save annotations automatically to JSON
         self.save_annotations()
-
-        # Refresh UI
-        self.show_current_frame()
+        self.show_current_frame(preserve_view=True)
         self.global_3d_bounds = self.calculate_global_3d_bounds()
+        self.update_active_widgets_state()
 
         QMessageBox.information(
             self,
@@ -1750,16 +1794,28 @@ class TrampolineAnnotator(QMainWindow):
         """Navigate to previous frame."""
         if self.active_worker and self.active_worker.isRunning():
             return
-        if self.current_frame_idx > 0:
-            self.current_frame_idx -= 1
+        if not hasattr(self, "filtered_frame_indices") or not self.filtered_frame_indices:
+            self.update_filtered_frames()
+        try:
+            p = self.filtered_frame_indices.index(self.current_frame_idx)
+        except ValueError:
+            p = 0
+        if p > 0:
+            self.current_frame_idx = self.filtered_frame_indices[p - 1]
             self.show_current_frame()
 
     def next_frame(self):
         """Navigate to next frame."""
         if self.active_worker and self.active_worker.isRunning():
             return
-        if self.current_frame_idx < len(self.sorted_frames) - 1:
-            self.current_frame_idx += 1
+        if not hasattr(self, "filtered_frame_indices") or not self.filtered_frame_indices:
+            self.update_filtered_frames()
+        try:
+            p = self.filtered_frame_indices.index(self.current_frame_idx)
+        except ValueError:
+            p = 0
+        if p < len(self.filtered_frame_indices) - 1:
+            self.current_frame_idx = self.filtered_frame_indices[p + 1]
             self.show_current_frame()
 
     def save_annotations(self):
@@ -1768,6 +1824,9 @@ class TrampolineAnnotator(QMainWindow):
             return
         if not self.json_path:
             return
+
+        # Run intermediate frames interpolation before saving
+        self.interpolate_annotations()
 
         self.status_bar.showMessage(f"Saving to {os.path.basename(self.json_path)}...")
         try:
@@ -1778,6 +1837,167 @@ class TrampolineAnnotator(QMainWindow):
             QMessageBox.critical(
                 self, "Save Error", f"Could not save annotations file:\n{e}"
             )
+
+    def update_nav_mode_button_ui(self):
+        """Updates the text and icon of the navigation mode button."""
+        mode = getattr(self, "navigation_mode", "all")
+        if mode == "all":
+            self.btn_nav_mode.setText("All Frames")
+            self.btn_nav_mode.setIcon(get_lucide_icon("eye", color="#ffffff"))
+        elif mode == "annotate":
+            self.btn_nav_mode.setText("Stepped Frames")
+            self.btn_nav_mode.setIcon(get_lucide_icon("pencil", color="#ffffff"))
+        elif mode == "interpolated":
+            self.btn_nav_mode.setText("Interpolated")
+            self.btn_nav_mode.setIcon(get_lucide_icon("chart-spline", color="#ffffff"))
+
+    def update_filtered_frames(self):
+        """Updates the active list of frame indices according to the navigation mode."""
+        mode = getattr(self, "navigation_mode", "all")
+        if not self.sorted_frames:
+            self.filtered_frame_indices = []
+            return
+
+        if mode == "all":
+            self.filtered_frame_indices = list(range(len(self.sorted_frames)))
+        elif mode == "annotate":
+            self.filtered_frame_indices = [
+                i for i in range(self.start_frame_idx, len(self.sorted_frames), self.frame_step)
+            ]
+        elif mode == "interpolated":
+            self.filtered_frame_indices = [
+                i for i in range(len(self.sorted_frames))
+                if i < self.start_frame_idx or (i - self.start_frame_idx) % self.frame_step != 0
+            ]
+
+        if not self.filtered_frame_indices:
+            self.filtered_frame_indices = [0]
+
+    def set_navigation_mode(self, mode):
+        """Sets the active navigation mode, snaps position, and saves settings."""
+        self.navigation_mode = mode
+        self.update_nav_mode_button_ui()
+        self.update_filtered_frames()
+        self.current_frame_idx = self.snap_frame_idx(self.current_frame_idx)
+        self.show_current_frame()
+        self.save_local_settings()
+
+    def is_interpolated_frame(self, idx):
+        """Returns True if the frame at idx is an interpolated (intermediate) frame."""
+        if getattr(self, "frame_step", 1) <= 1:
+            return False
+        return idx < self.start_frame_idx or (idx - self.start_frame_idx) % self.frame_step != 0
+
+    def get_nearest_interpolated_frame_idx(self, idx):
+        """Scans the sequence to find the closest intermediate (interpolated) frame index."""
+        if not self.sorted_frames or getattr(self, "frame_step", 1) <= 1:
+            return idx
+        best_idx = idx
+        min_dist = float('inf')
+        for i in range(len(self.sorted_frames)):
+            if self.is_interpolated_frame(i):
+                dist = abs(i - idx)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_idx = i
+        return best_idx
+
+    def get_nearest_step_frame_idx(self, idx):
+        """Returns the nearest step frame index to idx."""
+        if getattr(self, "frame_step", 1) <= 1:
+            return idx
+        if idx < self.start_frame_idx:
+            return self.start_frame_idx
+        k = round((idx - self.start_frame_idx) / self.frame_step)
+        candidate = self.start_frame_idx + k * self.frame_step
+        max_idx = len(self.sorted_frames) - 1
+        if candidate > max_idx:
+            candidate = self.start_frame_idx + ((max_idx - self.start_frame_idx) // self.frame_step) * self.frame_step
+        return max(self.start_frame_idx, candidate)
+
+    def snap_frame_idx(self, idx):
+        """Snaps the frame index according to the current navigation mode."""
+        if getattr(self, "navigation_mode", "all") == "annotate" and getattr(self, "frame_step", 1) > 1:
+            return self.get_nearest_step_frame_idx(idx)
+        elif getattr(self, "navigation_mode", "all") == "interpolated":
+            return self.get_nearest_interpolated_frame_idx(idx)
+        return idx
+
+    def interpolate_annotations(self):
+        """Linearly interpolates bounding boxes and keypoints for intermediate frames."""
+        if not self.sorted_frames or not self.coco_data:
+            return
+        if getattr(self, "frame_step", 1) <= 1:
+            return
+
+        for cam_key in CAMERA_KEYS:
+            step_valid_indices = []
+            for i, frame_idx in enumerate(self.sorted_frames):
+                is_step = (i >= self.start_frame_idx and (i - self.start_frame_idx) % self.frame_step == 0)
+                if is_step:
+                    path = self.frame_data[frame_idx].get(cam_key)
+                    if path:
+                        img_entry = self.img_file_map.get(path)
+                        if img_entry:
+                            ann = self.img_ann_map.get(img_entry["id"])
+                            if ann and ann.get("bbox") and len(ann["bbox"]) == 4 and ann["bbox"][2] > 0 and ann["bbox"][3] > 0:
+                                step_valid_indices.append(i)
+
+            if len(step_valid_indices) < 2:
+                continue
+
+            for k in range(len(step_valid_indices) - 1):
+                idx1 = step_valid_indices[k]
+                idx2 = step_valid_indices[k+1]
+
+                for i in range(idx1 + 1, idx2):
+                    t = (i - idx1) / (idx2 - idx1)
+                    frame_idx = self.sorted_frames[i]
+                    path = self.frame_data[frame_idx].get(cam_key)
+                    if not path:
+                        continue
+                    img_entry = self.img_file_map.get(path)
+                    if not img_entry:
+                        continue
+                    ann = self.img_ann_map.get(img_entry["id"])
+                    if not ann:
+                        continue
+
+                    path1 = self.frame_data[self.sorted_frames[idx1]][cam_key]
+                    img_entry1 = self.img_file_map[path1]
+                    ann1 = self.img_ann_map[img_entry1["id"]]
+
+                    path2 = self.frame_data[self.sorted_frames[idx2]][cam_key]
+                    img_entry2 = self.img_file_map[path2]
+                    ann2 = self.img_ann_map[img_entry2["id"]]
+
+                    bbox1 = ann1["bbox"]
+                    bbox2 = ann2["bbox"]
+                    ann["bbox"] = [
+                        (1 - t) * bbox1[0] + t * bbox2[0],
+                        (1 - t) * bbox1[1] + t * bbox2[1],
+                        (1 - t) * bbox1[2] + t * bbox2[2],
+                        (1 - t) * bbox1[3] + t * bbox2[3],
+                    ]
+
+                    kp1 = ann1.get("keypoints", [0]*51)
+                    kp2 = ann2.get("keypoints", [0]*51)
+                    interp_kp = [0] * 51
+                    num_kp = 0
+                    for kp_idx in range(17):
+                        x1, y1, v1 = kp1[kp_idx*3], kp1[kp_idx*3+1], kp1[kp_idx*3+2]
+                        x2, y2, v2 = kp2[kp_idx*3], kp2[kp_idx*3+1], kp2[kp_idx*3+2]
+
+                        if v1 > 0 and v2 > 0:
+                            x = (1 - t) * x1 + t * x2
+                            y = (1 - t) * y1 + t * y2
+                            v = 1
+                            interp_kp[kp_idx*3] = x
+                            interp_kp[kp_idx*3+1] = y
+                            interp_kp[kp_idx*3+2] = v
+                            num_kp += 1
+                    ann["keypoints"] = interp_kp
+                    ann["num_keypoints"] = num_kp
 
     def update_keypoint_sizes(self, value):
         """Updates the visual size of keypoint markers in all graphics scenes."""
@@ -1794,16 +2014,23 @@ class TrampolineAnnotator(QMainWindow):
 
     def on_slider_frame_changed(self, value):
         """Called when the user drags the frame slider."""
-        if self.current_frame_idx != value:
-            self.current_frame_idx = value
-            self.show_current_frame()
+        if not hasattr(self, "filtered_frame_indices") or not self.filtered_frame_indices:
+            return
+        if 0 <= value < len(self.filtered_frame_indices):
+            target_idx = self.filtered_frame_indices[value]
+            if self.current_frame_idx != target_idx:
+                self.current_frame_idx = target_idx
+                self.show_current_frame()
 
     def on_spin_frame_changed(self, value):
         """Called when the user types/changes the frame number in the spin box."""
-        new_idx = value - 1
-        if 0 <= new_idx < len(self.sorted_frames):
-            if self.current_frame_idx != new_idx:
-                self.current_frame_idx = new_idx
+        if not hasattr(self, "filtered_frame_indices") or not self.filtered_frame_indices:
+            return
+        new_pos = value - 1
+        if 0 <= new_pos < len(self.filtered_frame_indices):
+            target_idx = self.filtered_frame_indices[new_pos]
+            if self.current_frame_idx != target_idx:
+                self.current_frame_idx = target_idx
                 self.show_current_frame()
 
     def show_settings(self):
@@ -1987,6 +2214,10 @@ class TrampolineAnnotator(QMainWindow):
                 "current_frame_idx": self.current_frame_idx,
                 "yolo_path": getattr(self, "yolo_path", None),
                 "vitpose_path": getattr(self, "vitpose_path", None),
+                "frame_step": getattr(self, "frame_step", 1),
+                "start_frame_idx": getattr(self, "start_frame_idx", 0),
+                "navigation_mode": getattr(self, "navigation_mode", "all"),
+                "interpolated_opacity": getattr(self, "interpolated_opacity", 0.4),
             }
             os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
             with open(SETTINGS_FILE, "w") as f:

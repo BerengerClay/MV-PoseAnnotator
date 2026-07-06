@@ -569,9 +569,9 @@ class ReprojectedPointItem(QGraphicsEllipseItem):
         self.name = name
         self.parent_widget = parent_widget
         
-        # Distinct style: hollow, rose/magenta pen, dashed
+        # Distinct style: hollow, rose/magenta pen, dashed with transparency (alpha = 80)
         pen_width = max(1.0, radius / 4.0)
-        self.setPen(QPen(QColor(244, 63, 94), pen_width, Qt.PenStyle.DashLine))
+        self.setPen(QPen(QColor(244, 63, 94, 80), pen_width, Qt.PenStyle.DashLine))
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         
         # Purely visual overlay, no interaction
@@ -586,14 +586,14 @@ class ReprojectedPointItem(QGraphicsEllipseItem):
         """Update reprojected circle size and border thickness."""
         self.setRect(-radius, -radius, radius * 2, radius * 2)
         pen_width = max(1.0, radius / 4.0)
-        self.setPen(QPen(QColor(244, 63, 94), pen_width, Qt.PenStyle.DashLine))
+        self.setPen(QPen(QColor(244, 63, 94, 80), pen_width, Qt.PenStyle.DashLine))
 
 
 class DiscrepancyLineItem(QGraphicsLineItem):
     """Dashed connection line between the user's manual keypoint and the 3D reprojected coordinate."""
     def __init__(self, x1, y1, x2, y2):
         super().__init__(x1, y1, x2, y2)
-        self.setPen(QPen(QColor(244, 63, 94), 1, Qt.PenStyle.DotLine))
+        self.setPen(QPen(QColor(244, 63, 94, 80), 1, Qt.PenStyle.DotLine))
         self.setFlags(QGraphicsLineItem.GraphicsItemFlag(0))
         self.setZValue(2.0)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)

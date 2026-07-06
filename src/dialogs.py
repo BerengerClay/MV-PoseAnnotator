@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListView,
     QTreeView,
     QAbstractItemView,
+    QSpinBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -60,6 +61,9 @@ class SettingsDialog(QDialog):
             self.original_threshold = getattr(
                 parent, "vitpose_threshold", 0.3
             )
+            self.original_interpolated_opacity = getattr(
+                parent, "interpolated_opacity", 0.4
+            )
         else:
             self.original_kp_radius = 3
             self.original_rotate = True
@@ -68,6 +72,7 @@ class SettingsDialog(QDialog):
             self.original_delete_bbox = False
             self.original_show_confidence = True
             self.original_threshold = 0.3
+            self.original_interpolated_opacity = 0.4
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -178,6 +183,36 @@ class SettingsDialog(QDialog):
         threshold_layout.addWidget(self.lbl_threshold)
         threshold_layout.addWidget(self.slider_threshold)
         layout.addLayout(threshold_layout)
+
+        # Interpolated Opacity slider layout
+        opacity_layout = QHBoxLayout()
+        self.lbl_opacity = QLabel(f"Interpolated Opacity: {self.original_interpolated_opacity:.2f}")
+        self.lbl_opacity.setStyleSheet("color: #f8fafc; font-weight: bold; font-size: 12px;")
+
+        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_opacity.setRange(0, 100)
+        self.slider_opacity.setValue(int(self.original_interpolated_opacity * 100))
+        self.slider_opacity.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #475569;
+                height: 6px;
+                background: #1e293b;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #38bdf8;
+                border: 1px solid #0284c7;
+                width: 14px;
+                height: 14px;
+                margin-top: -4px;
+                margin-bottom: -4px;
+                border-radius: 7px;
+            }
+        """)
+        self.slider_opacity.valueChanged.connect(self.on_opacity_changed)
+        opacity_layout.addWidget(self.lbl_opacity)
+        opacity_layout.addWidget(self.slider_opacity)
+        layout.addLayout(opacity_layout)
 
         # Help & Controls Box
         help_group = QGroupBox("Keyboard Shortcuts & Controls")
@@ -294,6 +329,13 @@ class SettingsDialog(QDialog):
         if self.parent_win:
             self.parent_win.vitpose_threshold = threshold_val
 
+    def on_opacity_changed(self, value):
+        opacity_val = value / 100.0
+        self.lbl_opacity.setText(f"Interpolated Opacity: {opacity_val:.2f}")
+        if self.parent_win:
+            self.parent_win.interpolated_opacity = opacity_val
+            self.parent_win.show_current_frame(preserve_view=True)
+
     def accept(self):
         if self.parent_win:
             self.parent_win.save_local_settings()
@@ -308,6 +350,7 @@ class SettingsDialog(QDialog):
             self.parent_win.delete_bbox_on_clear = self.original_delete_bbox
             self.parent_win.vitpose_show_confidence = self.original_show_confidence
             self.parent_win.vitpose_threshold = self.original_threshold
+            self.parent_win.interpolated_opacity = self.original_interpolated_opacity
             # Re-apply orientations
             for cam in self.parent_win.camera_widgets:
                 if cam.view_mode == "bbox":
@@ -441,3 +484,116 @@ class SelectCameraFoldersDialog(QDialog):
 
     def get_camera_dirs(self):
         return self.camera_dirs
+
+
+class PreprocessOptionsDialog(QDialog):
+    def __init__(self, total_frames, current_frame_idx=0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Pre-processing Options")
+        self.resize(400, 320)
+        self.total_frames = total_frames
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Style sheet
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #0f172a;
+                color: #f8fafc;
+            }
+            QLabel {
+                color: #f8fafc;
+                font-size: 12px;
+            }
+            QSpinBox {
+                background-color: #1e293b;
+                color: #f8fafc;
+                border: 1px solid #475569;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 12px;
+            }
+            QCheckBox {
+                color: #f8fafc;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                background-color: #1e293b;
+                border: 1px solid #475569;
+                border-radius: 4px;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #38bdf8;
+                border-color: #0284c7;
+            }
+            QPushButton {
+                background-color: #1e293b;
+                color: white;
+                border: 1px solid #334155;
+                padding: 6px 12px;
+                border-radius: 4px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #334155;
+            }
+        """)
+
+        layout.addWidget(QLabel("<b>Pre-processing Configuration:</b>"))
+
+        # Checkbox to run preprocessing
+        self.chk_run_preprocess = QCheckBox("Run pre-processing (YOLO + ViTPose)")
+        self.chk_run_preprocess.setChecked(True)
+        layout.addWidget(self.chk_run_preprocess)
+
+        # Start frame
+        start_layout = QHBoxLayout()
+        start_lbl = QLabel("Starting frame index:")
+        start_lbl.setMinimumWidth(180)
+        self.spin_start = QSpinBox()
+        self.spin_start.setRange(1, total_frames)
+        self.spin_start.setValue(current_frame_idx + 1)
+        start_layout.addWidget(start_lbl)
+        start_layout.addWidget(self.spin_start)
+        layout.addLayout(start_layout)
+
+        # Frame step
+        step_layout = QHBoxLayout()
+        step_lbl = QLabel("Frame step:")
+        step_lbl.setMinimumWidth(180)
+        self.spin_step = QSpinBox()
+        self.spin_step.setRange(1, 100)
+        self.spin_step.setValue(8)
+        step_layout.addWidget(step_lbl)
+        step_layout.addWidget(self.spin_step)
+        layout.addLayout(step_layout)
+
+        # Explanation box
+        explanation = QLabel(
+            "<i>Note: Intermediate frames (skipped by the step) will "
+            "be automatically calculated by linear interpolation between the processed frames.</i>"
+        )
+        explanation.setWordWrap(True)
+        explanation.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        layout.addWidget(explanation)
+
+        layout.addStretch()
+
+        # Dialog buttons
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def get_settings(self):
+        return {
+            "run_preprocess": self.chk_run_preprocess.isChecked(),
+            "start_frame_idx": self.spin_start.value() - 1,
+            "frame_step": self.spin_step.value(),
+        }
+

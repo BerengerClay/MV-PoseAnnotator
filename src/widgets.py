@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QWidgetAction,
     QApplication,
+    QGraphicsLineItem,
 )
 from PyQt6.QtGui import QPixmap, QColor, QPen, QBrush, QCursor, QPainter
 from PyQt6.QtCore import Qt, QPointF, QRectF, QSize
@@ -679,6 +680,25 @@ class CameraWidget(QGraphicsView):
         log_debug(
             f"CameraWidget.load_frame started for camera {self.camera_name}, img_path={img_path}"
         )
+        
+        # Determine if this frame is interpolated
+        is_interpolated = False
+        if getattr(self.main_win, "frame_step", 1) > 1:
+            frame_idx = getattr(self.main_win, "current_frame_idx", 0)
+            start = getattr(self.main_win, "start_frame_idx", 0)
+            step = self.main_win.frame_step
+            if frame_idx < start or (frame_idx - start) % step != 0:
+                is_interpolated = True
+
+        interpolated_opacity = getattr(self.main_win, "interpolated_opacity", 0.4)
+
+        if is_interpolated:
+            self.setBackgroundBrush(QBrush(QColor(30, 41, 59)))  # Lighter Slate Blue
+            self.name_label.setText(f"{self.camera_name} (Interpolated)")
+        else:
+            self.setBackgroundBrush(QBrush(QColor(15, 23, 42)))  # Default Dark Slate Blue
+            self.name_label.setText(self.camera_name)
+        self.name_label.adjustSize()
         # Save zoom/pan state if we are reloading the same image frame and preserve_view is requested
         is_same_image = (
             hasattr(self, "current_img_path")
@@ -742,6 +762,8 @@ class CameraWidget(QGraphicsView):
         if has_bbox:
             x, y, w, h = bbox
             self.bbox_item = BBoxItem(QRectF(x, y, w, h), self)
+            if is_interpolated:
+                self.bbox_item.setOpacity(interpolated_opacity)
             self.scene.addItem(self.bbox_item)
             if bbox_selected:
                 self.bbox_item.setSelected(True)
@@ -798,6 +820,8 @@ class CameraWidget(QGraphicsView):
                     )
                     if kv > 0:
                         kp = KeypointItem(kx, ky, idx, COCO_KEYPOINTS[idx], self, kv)
+                        if is_interpolated:
+                            kp.setOpacity(interpolated_opacity)
                         self.scene.addItem(kp)
                         self.keypoint_items[idx] = kp
                         if idx in selected_point_ids:
@@ -825,6 +849,8 @@ class CameraWidget(QGraphicsView):
                         color = QColor(249, 115, 22, 200)
 
                     line = SkeletonItem(kp1, kp2, color)
+                    if is_interpolated:
+                        line.setOpacity(interpolated_opacity)
                     self.scene.addItem(line)
                     self.skeleton_items.append(line)
 
@@ -856,6 +882,7 @@ class CameraWidget(QGraphicsView):
                     else:
                         P = None
 
+                projected_points = {}
                 for kp_idx in range(17):
                     X_3d = pts_3d[kp_idx]
                     if not np.isnan(X_3d[0]):
@@ -893,6 +920,7 @@ class CameraWidget(QGraphicsView):
                                 u_proj, v_proj, kp_idx, COCO_KEYPOINTS[kp_idx], self
                             )
                             self.scene.addItem(proj_item)
+                            projected_points[kp_idx] = QPointF(u_proj, v_proj)
 
                             # Draw a connection line if there is also an annotation
                             if kp_idx in self.keypoint_items:
@@ -901,6 +929,18 @@ class CameraWidget(QGraphicsView):
                                     kp_item.pos().x(), kp_item.pos().y(), u_proj, v_proj
                                 )
                                 self.scene.addItem(line_item)
+
+                # Draw reprojected skeleton lines (transparent & dashed)
+                for conn in COCO_SKELETON:
+                    if conn[0] in projected_points and conn[1] in projected_points:
+                        pt1 = projected_points[conn[0]]
+                        pt2 = projected_points[conn[1]]
+                        line_item = QGraphicsLineItem(pt1.x(), pt1.y(), pt2.x(), pt2.y())
+                        line_item.setPen(QPen(QColor(244, 63, 94, 80), 2, Qt.PenStyle.DashLine))
+                        line_item.setZValue(1.9)
+                        line_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+                        line_item.setEnabled(False)
+                        self.scene.addItem(line_item)
 
         # Refresh or restore view according to the current mode
         if should_preserve:
