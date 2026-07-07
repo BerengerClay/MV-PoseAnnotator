@@ -1939,13 +1939,15 @@ class TrampolineAnnotator(QMainWindow):
             step_valid_indices = []
             for i, frame_idx in enumerate(self.sorted_frames):
                 is_step = (i >= self.start_frame_idx and (i - self.start_frame_idx) % self.frame_step == 0)
-                if is_step:
-                    path = self.frame_data[frame_idx].get(cam_key)
-                    if path:
-                        img_entry = self.img_file_map.get(path)
-                        if img_entry:
-                            ann = self.img_ann_map.get(img_entry["id"])
-                            if ann and ann.get("bbox") and len(ann["bbox"]) == 4 and ann["bbox"][2] > 0 and ann["bbox"][3] > 0:
+                path = self.frame_data[frame_idx].get(cam_key)
+                if path:
+                    img_entry = self.img_file_map.get(path)
+                    if img_entry:
+                        ann = self.img_ann_map.get(img_entry["id"])
+                        if ann and ann.get("bbox") and len(ann["bbox"]) == 4 and ann["bbox"][2] > 0 and ann["bbox"][3] > 0:
+                            kps = ann.get("keypoints", [])
+                            has_manual_kps = any(kps[idx * 3 + 2] == 2 for idx in range(17)) if kps else False
+                            if is_step or has_manual_kps:
                                 step_valid_indices.append(i)
 
             if len(step_valid_indices) < 2:
