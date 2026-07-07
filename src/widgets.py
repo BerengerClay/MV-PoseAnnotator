@@ -154,9 +154,9 @@ class CameraWidget(QGraphicsView):
         self.swap_lr_btn.setToolTip("Swap Left and Right keypoints for this view")
         self.swap_lr_btn.hide()
 
-        # Copy previous frame annotations button
+        # Predict next frame annotations button
         self.copy_prev_btn = QPushButton(self)
-        self.copy_prev_btn.setIcon(get_lucide_icon("history", color="#f8fafc"))
+        self.copy_prev_btn.setIcon(get_lucide_icon("trending-up", color="#f8fafc"))
         self.copy_prev_btn.setIconSize(QSize(12, 12))
         self.copy_prev_btn.setStyleSheet("""
             QPushButton {
@@ -173,7 +173,7 @@ class CameraWidget(QGraphicsView):
         """)
         self.copy_prev_btn.clicked.connect(self.copy_keypoints_from_prev_frame)
         self.copy_prev_btn.setToolTip(
-            "Copy annotations from previous frame for this view"
+            "Predict annotations from previous frames (constant velocity extrapolation)"
         )
         self.copy_prev_btn.hide()
 
@@ -1627,7 +1627,7 @@ class CameraWidget(QGraphicsView):
         )
 
     def copy_keypoints_from_prev_frame(self):
-        """Copies keypoints and bounding box from the previous frame for the same camera view."""
+        """Predicts keypoints and bounding box for the current frame by extrapolating from previous annotated frames."""
         if not hasattr(self, "current_annotation") or not self.current_annotation:
             return
 
@@ -1637,61 +1637,171 @@ class CameraWidget(QGraphicsView):
         except ValueError:
             p = 0
 
-        if p <= 0:
-            main_win.status_bar.showMessage("No previous frame in current navigation mode.", 3000)
-            return
+        # Scan backwards in the filtered list to find previously annotated frames
+        annotated_history = []  # list of (frame_idx_in_list, ann)
+        for i in range(p - 1, -1, -1):
+            idx_in_list = main_win.filtered_frame_indices[i]
+            frame_idx = main_win.sorted_frames[idx_in_list]
+            path = main_win.frame_data[frame_idx].get(self.camera_name)
+            if path:
+                img_entry = main_win.img_file_map.get(path)
+                if img_entry:
+                    ann = main_win.img_ann_map.get(img_entry["id"])
+                    if ann:
+                        bbox = ann.get("bbox", [])
+                        kps = ann.get("keypoints", [])
+                        has_bbox = bbox and len(bbox) == 4 and sum(bbox) > 0
+                        has_kps = kps and any(kps[idx * 3 + 2] > 0 for idx in range(17))
+                        if has_bbox or has_kps:
+                            annotated_history.append((idx_in_list, ann))
+                            if len(annotated_history) == 3:
+                                break
 
-        prev_idx_in_list = main_win.filtered_frame_indices[p - 1]
-        prev_frame_idx = main_win.sorted_frames[prev_idx_in_list]
-        key = self.camera_name
-
-        if (
-            prev_frame_idx not in main_win.frame_data
-            or key not in main_win.frame_data[prev_frame_idx]
-        ):
-            main_win.status_bar.showMessage(
-                f"Pas de données pour {key} à la frame précédente.", 3000
-            )
-            return
-
-        prev_img_path = main_win.frame_data[prev_frame_idx][key]
-        prev_img_entry = main_win.img_file_map.get(prev_img_path)
-        if not prev_img_entry:
-            return
-
-        prev_ann = main_win.img_ann_map.get(prev_img_entry["id"])
-        if not prev_ann:
-            return
-
-        prev_keypoints = prev_ann.get("keypoints", [])
-        prev_bbox = prev_ann.get("bbox", [])
-
-        has_prev_kps = prev_keypoints and any(
-            prev_keypoints[idx * 3 + 2] > 0 for idx in range(17)
-        )
-        has_prev_bbox = prev_bbox and sum(prev_bbox) > 0
-
-        if not has_prev_kps and not has_prev_bbox:
-            main_win.status_bar.showMessage(
-                f"Pas d'annotations à copier pour la frame précédente de {key}.", 3000
-            )
+        if len(annotated_history) == 0:
+            main_win.status_bar.showMessage("No previous annotations found to predict from.", 3000)
             return
 
         main_win.push_undo()
+        t_current = main_win.current_frame_idx
 
-        # Copy keypoints
-        if has_prev_kps:
-            self.current_annotation["keypoints"] = list(prev_keypoints)
-            self.current_annotation["num_keypoints"] = prev_ann.get("num_keypoints", 0)
-        else:
-            self.current_annotation["keypoints"] = [0.0] * 51
-            self.current_annotation["num_keypoints"] = 0
+        if len(annotated_history) == 1:
+            # Fallback to copy from the single available previous frame
+            t1, ann1 = annotated_history[0]
+            bbox_pred = list(ann1.get("bbox", [0, 0, 0, 0]))
+            kps_pred = list(ann1.get("keypoints", [0] * 51))
+            num_kps_pred = ann1.get("num_keypoints", 0)
+            main_win.status_bar.showMessage("Copied from previous frame (not enough history for prediction).", 3000)
+        elif len(annotated_history) == 2:
+            # We have 2 previous frames. Perform linear extrapolation (constant velocity prediction).
+            t1, ann1 = annotated_history[0]
+            t2, ann2 = annotated_history[1]
 
-        # Copy bounding box
-        if has_prev_bbox:
-            self.current_annotation["bbox"] = list(prev_bbox)
+            dt_past = t1 - t2
+            dt_future = t_current - t1
+
+            if dt_past == 0:
+                dt_past = 1
+
+            # Extrapolate bounding box
+            bbox1 = ann1.get("bbox", [0, 0, 0, 0])
+            bbox2 = ann2.get("bbox", [0, 0, 0, 0])
+            if len(bbox1) == 4 and sum(bbox1) > 0 and len(bbox2) == 4 and sum(bbox2) > 0:
+                bbox_pred = [
+                    bbox1[0] + ((bbox1[0] - bbox2[0]) / dt_past) * dt_future,
+                    bbox1[1] + ((bbox1[1] - bbox2[1]) / dt_past) * dt_future,
+                    bbox1[2] + ((bbox1[2] - bbox2[2]) / dt_past) * dt_future,
+                    bbox1[3] + ((bbox1[3] - bbox2[3]) / dt_past) * dt_future,
+                ]
+                bbox_pred[2] = max(10, bbox_pred[2])
+                bbox_pred[3] = max(10, bbox_pred[3])
+            else:
+                bbox_pred = list(bbox1) if sum(bbox1) > 0 else list(bbox2)
+
+            # Extrapolate keypoints
+            kp1 = ann1.get("keypoints", [0] * 51)
+            kp2 = ann2.get("keypoints", [0] * 51)
+            kps_pred = [0] * 51
+            num_kps_pred = 0
+
+            for idx in range(17):
+                offset = idx * 3
+                x1, y1, v1 = kp1[offset], kp1[offset + 1], kp1[offset + 2]
+                x2, y2, v2 = kp2[offset], kp2[offset + 1], kp2[offset + 2]
+
+                if v1 > 0 and v2 > 0:
+                    x_pred = x1 + ((x1 - x2) / dt_past) * dt_future
+                    y_pred = y1 + ((y1 - y2) / dt_past) * dt_future
+                    kps_pred[offset] = x_pred
+                    kps_pred[offset + 1] = y_pred
+                    kps_pred[offset + 2] = max(v1, v2)
+                    num_kps_pred += 1
+                elif v1 > 0:
+                    kps_pred[offset] = x1
+                    kps_pred[offset + 1] = y1
+                    kps_pred[offset + 2] = v1
+                    num_kps_pred += 1
+                else:
+                    kps_pred[offset] = 0
+                    kps_pred[offset + 1] = 0
+                    kps_pred[offset + 2] = 0
+
+            main_win.status_bar.showMessage("Predicted position from velocity of previous frames (linear).", 3000)
         else:
-            self.current_annotation["bbox"] = [0.0, 0.0, 0.0, 0.0]
+            # We have 3 previous frames. Perform quadratic extrapolation (constant acceleration prediction).
+            t1, ann1 = annotated_history[0]
+            t2, ann2 = annotated_history[1]
+            t3, ann3 = annotated_history[2]
+
+            denom1 = (t1 - t2) * (t1 - t3)
+            denom2 = (t2 - t1) * (t2 - t3)
+            denom3 = (t3 - t1) * (t3 - t2)
+
+            if denom1 == 0: denom1 = 1
+            if denom2 == 0: denom2 = 1
+            if denom3 == 0: denom3 = 1
+
+            w1 = ((t_current - t2) * (t_current - t3)) / denom1
+            w2 = ((t_current - t1) * (t_current - t3)) / denom2
+            w3 = ((t_current - t1) * (t_current - t2)) / denom3
+
+            # Extrapolate bounding box
+            bbox1 = ann1.get("bbox", [0, 0, 0, 0])
+            bbox2 = ann2.get("bbox", [0, 0, 0, 0])
+            bbox3 = ann3.get("bbox", [0, 0, 0, 0])
+
+            if len(bbox1) == 4 and sum(bbox1) > 0 and len(bbox2) == 4 and sum(bbox2) > 0 and len(bbox3) == 4 and sum(bbox3) > 0:
+                bbox_pred = [
+                    w1 * bbox1[0] + w2 * bbox2[0] + w3 * bbox3[0],
+                    w1 * bbox1[1] + w2 * bbox2[1] + w3 * bbox3[1],
+                    w1 * bbox1[2] + w2 * bbox2[2] + w3 * bbox3[2],
+                    w1 * bbox1[3] + w2 * bbox2[3] + w3 * bbox3[3],
+                ]
+                bbox_pred[2] = max(10, bbox_pred[2])
+                bbox_pred[3] = max(10, bbox_pred[3])
+            else:
+                bbox_pred = list(bbox1) if sum(bbox1) > 0 else list(bbox2)
+
+            # Extrapolate keypoints
+            kp1 = ann1.get("keypoints", [0] * 51)
+            kp2 = ann2.get("keypoints", [0] * 51)
+            kp3 = ann3.get("keypoints", [0] * 51)
+            kps_pred = [0] * 51
+            num_kps_pred = 0
+
+            for idx in range(17):
+                offset = idx * 3
+                x1, y1, v1 = kp1[offset], kp1[offset + 1], kp1[offset + 2]
+                x2, y2, v2 = kp2[offset], kp2[offset + 1], kp2[offset + 2]
+                x3, y3, v3 = kp3[offset], kp3[offset + 1], kp3[offset + 2]
+
+                if v1 > 0 and v2 > 0 and v3 > 0:
+                    x_pred = w1 * x1 + w2 * x2 + w3 * x3
+                    y_pred = w1 * y1 + w2 * y2 + w3 * y3
+                    kps_pred[offset] = x_pred
+                    kps_pred[offset + 1] = y_pred
+                    kps_pred[offset + 2] = max(v1, v2, v3)
+                    num_kps_pred += 1
+                elif v1 > 0:
+                    kps_pred[offset] = x1
+                    kps_pred[offset + 1] = y1
+                    kps_pred[offset + 2] = v1
+                    num_kps_pred += 1
+                else:
+                    kps_pred[offset] = 0
+                    kps_pred[offset + 1] = 0
+                    kps_pred[offset + 2] = 0
+
+            main_win.status_bar.showMessage("Predicted position from acceleration of previous frames (quadratic).", 3000)
+
+        # Update current annotation
+        current_bbox = self.current_annotation.get("bbox", [0, 0, 0, 0])
+        if current_bbox and len(current_bbox) == 4 and sum(current_bbox) > 0:
+            pass
+        else:
+            self.current_annotation["bbox"] = bbox_pred
+
+        self.current_annotation["keypoints"] = kps_pred
+        self.current_annotation["num_keypoints"] = num_kps_pred
 
         # Reload current frame
         self.load_frame(
@@ -1703,6 +1813,3 @@ class CameraWidget(QGraphicsView):
         main_win.save_annotations()
         if getattr(main_win, "show_3d_reprojection", False):
             main_win.show_current_frame(preserve_view=True)
-        main_win.status_bar.showMessage(
-            f"Annotations copiées depuis la frame précédente pour {key}.", 3000
-        )
