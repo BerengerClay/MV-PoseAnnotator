@@ -2,7 +2,13 @@ import os
 import re
 import json
 import cv2
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        import toml as tomllib
 import numpy as np
 import torch
 
@@ -540,7 +546,6 @@ class TrampolineAnnotator(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Right), self, self.next_frame)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.reset_camera_grid)
         QShortcut(QKeySequence(Qt.Key.Key_Y), self, self.trigger_yolo_vitpose)
-        QShortcut(QKeySequence(Qt.Key.Key_S), self, self.save_annotations)
 
         # Undo/Redo keyboard shortcuts
         QShortcut(QKeySequence("Ctrl+Z"), self, self.undo)

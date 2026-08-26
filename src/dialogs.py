@@ -118,7 +118,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.chk_delete_bbox)
 
         # Show confidence checkbox
-        self.chk_show_confidence = QCheckBox("Show ViTPose confidence (opacity based on confidence)")
+        self.chk_show_confidence = QCheckBox(
+            "Show ViTPose confidence (border color based on confidence)"
+        )
         self.chk_show_confidence.setChecked(parent.vitpose_show_confidence if parent else True)
         if parent:
             self.chk_show_confidence.toggled.connect(self.on_show_confidence_toggled)
@@ -248,8 +250,7 @@ class SettingsDialog(QDialog):
             "<b>Global Shortcuts:</b><br>"
             "  - <b>Left / Right Arrow</b>: Frame Navigation<br>"
             "  - <b>Escape</b>: Reset to 8-view Grid Mode<br>"
-            "  - <b>Y</b>: Run ViTPose on maximized view's bounding box<br>"
-            "  - <b>S</b>: Save sequence annotations to JSON file"
+            "  - <b>Y</b>: Run ViTPose on maximized view's bounding box"
         )
         lbl_help = QLabel(help_text)
         lbl_help.setWordWrap(True)

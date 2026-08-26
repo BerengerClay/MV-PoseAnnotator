@@ -1736,9 +1736,12 @@ class CameraWidget(QGraphicsView):
             denom2 = (t2 - t1) * (t2 - t3)
             denom3 = (t3 - t1) * (t3 - t2)
 
-            if denom1 == 0: denom1 = 1
-            if denom2 == 0: denom2 = 1
-            if denom3 == 0: denom3 = 1
+            if denom1 == 0:
+                denom1 = 1
+            if denom2 == 0:
+                denom2 = 1
+            if denom3 == 0:
+                denom3 = 1
 
             w1 = ((t_current - t2) * (t_current - t3)) / denom1
             w2 = ((t_current - t1) * (t_current - t3)) / denom2

@@ -29,7 +29,8 @@ ENV/
 env/
 
 # Deep Learning Models / Weights
-weights/**
+weights/*
+!weights/.gitkeep
 *.pth
 *.pt
 *.engine
@@ -49,7 +50,7 @@ trash/
 .DS_Store
 Thumbs.db
 
-# User local settings / session
+# User local settings / session / logs
 configs/local_settings.json
-
+*.log
 annotator.log

@@ -1,6 +1,9 @@
 PyQt6
 opencv-python
 numpy
+matplotlib
+requests
 torch
 torchvision
 ultralytics
+tomli;python_version<"3.11"
